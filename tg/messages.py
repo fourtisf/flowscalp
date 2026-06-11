@@ -100,5 +100,13 @@ def position_text(pos, upnl: float, minutes: int) -> str:
 
 
 def settings_text(settings) -> str:
-    rows = [f"{k} = {v}" for k, v in settings.model_dump().items()]
+    from config import RANGES
+    rows = []
+    for k, v in settings.model_dump().items():
+        spec = RANGES.get(k, {})
+        if isinstance(v, tuple):
+            v = ", ".join(v) or "(none)"
+        rng = f" [{spec['min']}–{spec['max']}]" if "min" in spec else ""
+        desc = spec.get("desc", "")
+        rows.append(f"• {k} = {v}{rng}\n   {desc}")
     return "\n".join(rows)
