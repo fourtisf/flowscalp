@@ -267,6 +267,60 @@ class Engine:
             st.set_bot_state(Bot.RUNNING)
             raise RuntimeError(f"mode switch failed, staying in {st.mode}: {e}") from e
 
+    async def _cmd_why(self) -> str:
+        """Live diagnosis: walk the entry conditions against current buffers
+        and report exactly which stage is blocking."""
+        from core import strategy as stg
+        from core import timewin
+        st = self.state
+        s = self.store.current
+        c1m = list(self.feed.candles_1m)
+        c15 = list(self.feed.candles_15m)
+        deltas = list(self.feed.deltas_1m)
+        lines = [f"🔎 KENAPA BELUM ENTRY — kondisi sekarang",
+                 f"state {st.bot_state.value} | posisi {st.pos_state.value} | mode {st.mode}"]
+        need = max(s.sweep_lookback + 3, 60)
+        if len(c1m) < need or len(c15) < 210:
+            lines.append(f"❌ data: {len(c1m)} bar 1m (butuh {need}), {len(c15)} bar 15m (butuh 210)")
+            return "\n".join(lines)
+        last, prev = c1m[-1], c1m[-2]
+
+        sess = stg.session_ok(last.ts + 60_000, s)
+        lines.append(f"{'✅' if sess else '❌'} sesi entry: {'AKTIF' if sess else 'TUTUP'}"
+                     f" ({', '.join(s.session_windows)} UTC)")
+
+        bps = stg.atr(c1m, 14) / last.close * 10_000
+        ok_atr = s.atr_floor_bps <= bps <= s.atr_ceil_bps
+        note = "" if ok_atr else (" — pasar terlalu SEPI, semua sinyal dilewati"
+                                  if bps < s.atr_floor_bps else " — pasar terlalu LIAR")
+        lines.append(f"{'✅' if ok_atr else '❌'} volatilitas: ATR {bps:.1f} bps"
+                     f" (syarat {s.atr_floor_bps:.0f}–{s.atr_ceil_bps:.0f}){note}")
+
+        bias = stg._bias(c15, s)
+        lines.append(f"ℹ️ bias tren 15m: {bias} ({'long & short' if bias == 'both' else bias + ' saja'})")
+
+        window = c1m[-(s.sweep_lookback + 2):-2]
+        lo = min(c.low for c in window)
+        hi = max(c.high for c in window)
+        pen = s.sweep_min_pen_pct / 100
+        need_lo, need_hi = lo * (1 - pen), hi * (1 + pen)
+        swept = (last.low <= need_lo or prev.low <= need_lo
+                 or last.high >= need_hi or prev.high >= need_hi)
+        lines.append(f"{'✅' if swept else '⏳'} struktur sweep: "
+                     f"{'TERJADI di 2 bar terakhir' if swept else 'belum ada sapuan level'}")
+        lines.append(f"   level bawah {lo:,.0f} → butuh low ≤ {need_lo:,.0f}"
+                     f" (low terakhir {last.low:,.0f})")
+        lines.append(f"   level atas {hi:,.0f} → butuh high ≥ {need_hi:,.0f}"
+                     f" (high terakhir {last.high:,.0f})")
+
+        if s.cvd_filter:
+            k = s.sweep_lookback + 24
+            tail = deltas[-k:] if len(deltas) >= k else deltas
+            nones = sum(1 for x in tail if x is None)
+            lines.append("✅ filter CVD: siap" if nones == 0 and len(tail) >= k
+                         else f"⏳ filter CVD: warm-up, ±{max(nones, k - len(tail))} menit lagi")
+        return "\n".join(lines)
+
     async def _cmd_closepos(self) -> str:
         """Manual close from the owner: cancel a pending entry or flatten."""
         st = self.state

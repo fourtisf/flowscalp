@@ -73,6 +73,7 @@ BOT_COMMANDS = [
     ("setwallet", "simpan alamat wallet utama"),
     ("setsub", "simpan alamat subaccount (opsional)"),
     ("dashboard", "link pantau PnL real-time"),
+    ("why", "diagnosa: kenapa belum entry?"),
     ("testtrade", "suntik 1 trade uji (paper saja)"),
     ("pause", "tahan entry baru"),
     ("resume", "lanjutkan / bangunkan bot"),
@@ -186,6 +187,7 @@ class TgBot:
             ("set", self.cmd_set), ("settings", self.cmd_settings),
             ("setkey", self.cmd_setkey), ("setwallet", self.cmd_setwallet),
             ("setsub", self.cmd_setsub), ("dashboard", self.cmd_dashboard),
+            ("why", self.cmd_why),
             ("testtrade", self.cmd_testtrade),
             ("pause", self.cmd_pause),
             ("resume", self.cmd_resume), ("stop", self.cmd_stop), ("mode", self.cmd_mode),
@@ -570,6 +572,9 @@ class TgBot:
 
     async def cmd_settings(self, update, context) -> None:
         await self._reply(update, messages.settings_text(self.store.current))
+
+    async def cmd_why(self, update, context) -> None:
+        await self._submit_reply(update, "why")
 
     async def cmd_testtrade(self, update, context) -> None:
         if self.state.mode == "live":

@@ -327,3 +327,11 @@ async def test_live_fill_hash_appears_as_tx_proof(harness):
     assert "LAWAN" not in exit_msg
     # paper fills carry no hash → no link line
     assert not any("explorer/tx/\n" in m for m in notifier.msgs)
+
+
+async def test_why_diagnoses_blocking_stage(harness):
+    engine, db, feed, state, notifier, sig_bar = await harness()
+    res = await engine._cmd_why()
+    assert "KENAPA BELUM ENTRY" in res
+    assert "sesi entry" in res and "volatilitas" in res and "struktur sweep" in res
+    assert "ATR" in res
