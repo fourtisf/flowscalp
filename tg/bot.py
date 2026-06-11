@@ -234,8 +234,12 @@ class TgBot:
             await self._reply(update, f"⚠️ gagal: {msg}")
 
     def _upnl(self) -> Optional[float]:
-        pos, mid = self.state.position, self.feed.mid
-        if pos is None or not pos.ts_open or not mid:
+        pos = self.state.position
+        if pos is None or not pos.ts_open:
+            return None
+        coin = pos.coin or getattr(self.feed, "primary", "BTC")
+        mid = self.feed.mid_of(coin) if hasattr(self.feed, "mid_of") else self.feed.mid
+        if not mid:
             return None
         d = 1 if pos.side == "long" else -1
         return d * (mid - pos.entry_px) * pos.filled_sz

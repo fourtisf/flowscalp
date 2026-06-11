@@ -384,3 +384,69 @@ async def test_multi_coin_signal_and_single_position_lock(harness):
     row = (await db.recent_trades("paper", 1))[0]
     assert row["id"] == tr_open and row["coin"] == "SOL" and row["exit_reason"] == "tp"
     assert state.last_swept_level["SOL:long"] == 99_900
+
+
+def _attach_sol_book(feed, sol_c1m, btc_mid, sol_mid):
+    """Second (SOL) book on the fake feed with per-coin mids FAR apart, so any
+    code path pricing SOL off the primary (BTC) mid fails loudly."""
+    from collections import deque
+    from tests.synth import flat_15m as f15
+
+    class SolBook:
+        candles_1m = deque(sol_c1m, maxlen=600)
+        deltas_1m = deque([0.0] * len(sol_c1m), maxlen=600)
+        candles_15m = deque(f15(), maxlen=300)
+        funding_hourly = None
+    feed.books = {"BTC": feed, "SOL": SolBook()}
+    feed.book = lambda c: feed.books[c]
+    feed.mids = {"BTC": btc_mid, "SOL": sol_mid}
+    feed.mid_of = lambda c: feed.mids[c]
+    feed.mid = btc_mid                          # legacy primary-coin view
+    feed.primary = "BTC"
+    import time as _t
+    feed.last_tick_ts = int(_t.time() * 1000)
+    return SolBook
+
+
+async def test_multi_coin_flatten_prices_at_position_coin_mid(harness):
+    """Manual close of a SOL position must fill at the SOL mid — regression
+    for the executor mid provider that always returned the primary (BTC) mid,
+    which made live flatten place unfillable IOC bounds on non-primary coins."""
+    from tests.synth import long_sweep_same_bar as sweep
+    engine, db, feed, state, notifier, sig_bar = await harness()
+    sol_c1m = sweep(vol_sweep=200.0)
+    book = _attach_sol_book(feed, sol_c1m, btc_mid=150_000.0, sol_mid=99_960.0)
+
+    await engine._dispatch("candle_1m_closed", ("SOL", sol_c1m[-1]))
+    assert state.pos_state == Pos.PENDING_ENTRY and state.position.coin == "SOL"
+    fill = Candle(sol_c1m[-1].ts + MIN, 99_950.0, 99_990.0, 99_940.0, 99_970.0, 100.0)
+    book.candles_1m.append(fill)
+    book.deltas_1m.append(0.0)
+    await engine._dispatch("candle_1m_closed", ("SOL", fill))
+    assert state.pos_state == Pos.IN_POSITION
+
+    res = await engine._cmd_closepos()
+    assert "ditutup" in res and state.pos_state == Pos.FLAT
+    tr = (await db.recent_trades("paper", 1))[0]
+    assert tr["coin"] == "SOL" and tr["exit_reason"] == "manual"
+    assert tr["exit_px"] == pytest.approx(99_960.0 * 0.9999)   # SOL mid − 1bp, not BTC's
+
+
+async def test_multi_coin_taker_fallback_stays_on_signal_coin(harness):
+    """allow_taker_entry: a SOL maker entry that times out must send the IOC
+    fallback for SOL at the SOL mid — regression for the fallback defaulting
+    to the primary coin (a BTC order sized in SOL units)."""
+    from tests.synth import long_sweep_same_bar as sweep
+    engine, db, feed, state, notifier, sig_bar = await harness(allow_taker_entry="true")
+    sol_c1m = sweep(vol_sweep=200.0)
+    _attach_sol_book(feed, sol_c1m, btc_mid=150_000.0, sol_mid=99_950.0)
+
+    await engine._dispatch("candle_1m_closed", ("SOL", sol_c1m[-1]))
+    assert state.pos_state == Pos.PENDING_ENTRY and state.position.coin == "SOL"
+
+    # maker never fills → timeout fires the IOC fallback on the SAME coin
+    await engine._dispatch("timer", state.position.placed_ts + 21_000)
+    assert state.pos_state == Pos.IN_POSITION
+    pos = state.position
+    assert pos.coin == "SOL"
+    assert pos.entry_px == pytest.approx(99_950.0 * 1.0001)    # SOL mid + 1bp slip

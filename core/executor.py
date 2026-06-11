@@ -71,7 +71,7 @@ class BaseExecutor(Protocol):
     async def boot(self) -> None: ...                # fee rates, szDecimals, reconcile
     async def equity(self) -> float: ...
     async def place_entry(self, sig: Signal, size: SizeResult) -> str: ...
-    async def cancel_entry(self, oid: str) -> None: ...
+    async def cancel_entry(self, oid: str, coin: str = "") -> None: ...
     async def arm_exits(self, pos: Position) -> None: ...   # TP limit + SL trigger
     async def flatten(self, reason: str) -> None: ...       # IOC, reduce-only
     async def cancel_all(self) -> None: ...
@@ -109,6 +109,7 @@ class PaperExecutor:
       config fallback constants (logged).
     """
     name = "paper"
+    _ns_counter = 0   # per-process uniquifier: same-ms constructions must not share a namespace
 
     def __init__(self, env, db, mid_provider: Callable[[], float],
                  on_fill: Callable[[Fill], Awaitable[None]]):
@@ -129,7 +130,8 @@ class PaperExecutor:
         # unique per executor instance so ids never collide with oids restored
         # from a pre-restart snapshot (collision once mislabeled a manual
         # close as an SL exit)
-        self._oid_ns = f"P{now_ms() % 100_000_000}"
+        PaperExecutor._ns_counter += 1
+        self._oid_ns = f"P{now_ms() % 100_000_000}.{PaperExecutor._ns_counter}"
 
     def _next_oid(self) -> str:
         self._oid_seq += 1
@@ -184,7 +186,7 @@ class PaperExecutor:
                                       coin or self.coin)
         return oid
 
-    async def cancel_entry(self, oid: str) -> None:
+    async def cancel_entry(self, oid: str, coin: str = "") -> None:
         if self._pending and self._pending.oid == oid:
             self._pending = None
 

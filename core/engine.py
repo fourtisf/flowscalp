@@ -56,12 +56,12 @@ class Engine:
         if snap:
             st.restore(snap)
         if st.mode == "live":
-            self.executor = LiveExecutor(self.env, self.db, lambda: self.feed.mid)
+            self.executor = LiveExecutor(self.env, self.db, self._mid_of)
             await self.executor.boot()
             await self._reconcile_boot()
             self.feed.enable_user_fills(self.env.trading_address)
         else:
-            self.executor = PaperExecutor(self.env, self.db, lambda: self.feed.mid, self.handle_fill)
+            self.executor = PaperExecutor(self.env, self.db, self._mid_of, self.handle_fill)
             await self.executor.boot()
             if st.position is not None and st.pos_state == Pos.IN_POSITION:
                 await self.executor.arm_exits(st.position)
@@ -255,7 +255,7 @@ class Engine:
         st.set_bot_state(Bot.RECONCILE)
         try:
             if target == "live":
-                ex = LiveExecutor(self.env, self.db, lambda: self.feed.mid)
+                ex = LiveExecutor(self.env, self.db, self._mid_of)
                 await ex.boot()
                 eq = await ex.equity()
                 if eq <= 0:
@@ -279,7 +279,7 @@ class Engine:
                     st.mode = "live"
                 self.feed.enable_user_fills(self.env.trading_address)
             else:
-                ex = PaperExecutor(self.env, self.db, lambda: self.feed.mid, self.handle_fill)
+                ex = PaperExecutor(self.env, self.db, self._mid_of, self.handle_fill)
                 await ex.boot()
                 self.executor = ex
                 st.mode = "paper"
@@ -365,7 +365,8 @@ class Engine:
         if pos is None:
             return "tidak ada posisi/order yang terbuka"
         if st.pos_state == Pos.PENDING_ENTRY:
-            await self.executor.cancel_entry(pos.oids.get("entry", ""))
+            await self.executor.cancel_entry(pos.oids.get("entry", ""),
+                                             coin=pos.coin or self._primary())
             st.position = None
             st.set_pos_state(Pos.FLAT)
             return "order entry dibatalkan ✅"
@@ -411,17 +412,20 @@ class Engine:
 
         if st.mode == "live":
             # passive maker just under mid; minimal size clearing the $10 floor
+            coin = self._primary()
+            dec = (self.executor.sz_dec(coin) if hasattr(self.executor, "sz_dec")
+                   else self.executor.sz_decimals)
             entry = mid * 0.9999
-            sz = math.ceil((11.0 / entry) * 10 ** 5) / 10 ** 5
+            sz = math.ceil((11.0 / entry) * 10 ** dec) / 10 ** dec
             sl = entry * 0.997
             sig = Signal("long", entry, sl, entry + s.tp_r * (entry - sl),
                          swept_level=round(mid),
                          reason="TEST TRADE REAL — ukuran minimal, bukan sinyal strategi")
             eq = await self.executor.equity()
             override = risk.SizeResult(True, sz, sz * entry, (sz * entry) / max(eq, 1.0), False)
-            await self._place_entry(sig, s, now_ms(), size_override=override, coin=self._primary())
+            await self._place_entry(sig, s, now_ms(), size_override=override, coin=coin)
             if st.pos_state == Pos.PENDING_ENTRY:
-                return (f"🔴 test trade REAL dipasang: LONG {sz} BTC (≈${sz * entry:,.2f})"
+                return (f"🔴 test trade REAL dipasang: LONG {sz} {coin} (≈${sz * entry:,.2f})"
                         f" @ ~{entry:,.0f}.\n"
                         f"order maker pasif — kalau {s.maker_timeout_s} detik tidak terisi,"
                         f" otomatis batal (kirim ulang saja).\n"
@@ -607,7 +611,7 @@ class Engine:
         # cancel the surviving sibling exit order
         sibling = pos.oids.get("sl") if reason == "tp" else pos.oids.get("tp")
         if self.executor.name == "live" and sibling and reason in ("tp", "sl"):
-            await self.executor.cancel_entry(sibling)
+            await self.executor.cancel_entry(sibling, coin=pos.coin or self._primary())
         elif self.executor.name == "live" and reason not in ("tp", "sl"):
             await self.executor.cancel_all()
         if self.executor.name == "paper":
@@ -715,15 +719,16 @@ class Engine:
 
     async def _maker_timeout(self, pos: Position, s: Settings) -> None:
         st = self.state
-        await self.executor.cancel_entry(pos.oids.get("entry", ""))
+        coin = pos.coin or self._primary()
+        await self.executor.cancel_entry(pos.oids.get("entry", ""), coin=coin)
         if pos.filled_sz > self._sz_eps:
             await self._complete_entry(now_ms(), partial=True)
-            await self.db.log_event("INFO", f"maker timeout with partial fill {pos.filled_sz} BTC — kept")
+            await self.db.log_event("INFO", f"maker timeout with partial fill {pos.filled_sz} {coin} — kept")
         elif s.allow_taker_entry:
             sig = Signal(pos.side, pos.entry_px, pos.sl_px, pos.tp_px, pos.swept_level, pos.reason)
             pos.taker_sent_ts = now_ms()
-            await self.executor.taker_entry(sig, pos.size_btc)
-            await self.db.log_event("INFO", "maker timeout → IOC taker entry sent")
+            await self.executor.taker_entry(sig, pos.size_btc, coin=coin)
+            await self.db.log_event("INFO", f"maker timeout → IOC taker entry sent ({coin})")
         else:
             st.position = None
             st.set_pos_state(Pos.FLAT)
