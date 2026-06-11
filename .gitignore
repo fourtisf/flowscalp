@@ -1,0 +1,10 @@
+.env
+data/
+logs/
+backups/
+__pycache__/
+*.db*
+*.pyc
+venv/
+.pytest_cache/
+.coverage
