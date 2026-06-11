@@ -197,7 +197,10 @@ class TgBot:
         except Exception as e:  # noqa: BLE001 — surface the failure to the owner
             log.exception("command %s failed", name)
             await self.db.log_event("ERROR", f"/{name} gagal: {e}")
-            await self._reply(update, f"⚠️ gagal: {e}")
+            msg = str(e)
+            if len(msg) > 300:
+                msg = msg[:300] + "… (detail lengkap di log server)"
+            await self._reply(update, f"⚠️ gagal: {msg}")
 
     def _upnl(self) -> Optional[float]:
         pos, mid = self.state.position, self.feed.mid

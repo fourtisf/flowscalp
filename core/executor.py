@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional, Protocol
@@ -297,7 +298,10 @@ class LiveExecutor:
         from hyperliquid.info import Info
 
         if not self.env.hl_agent_private_key:
-            raise ExecError("HL_AGENT_PRIVATE_KEY missing — cannot go live")
+            raise ExecError("API key agent belum diisi — set lewat /setkey")
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", self.env.trading_address or ""):
+            raise ExecError("alamat wallet utama belum diisi/salah — set lewat /setwallet"
+                            " (alamat 0x… dari pojok kanan atas app Hyperliquid)")
         wallet = eth_account.Account.from_key(self.env.hl_agent_private_key)
         self._info = await asyncio.to_thread(Info, self.env.api_url, True)
         self._exchange = await asyncio.to_thread(
