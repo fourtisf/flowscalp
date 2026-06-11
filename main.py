@@ -70,6 +70,9 @@ def decide_boot_mode(env: Env, snap: dict | None) -> tuple[str, str]:
     if snap and snap.get("mode") == "live" and snap.get("position") \
             and env.hl_agent_private_key and env.hl_main_wallet_address:
         return "live", "crash recovery: snapshot shows a LIVE position — resuming live to manage it"
+    if snap and snap.get("mode") == "live":
+        return "paper", ("restart terdeteksi: bot kembali ke mode PAPER (aturan keamanan)."
+                         " Kirim /mode live + /confirm untuk kembali live.")
     if env.mode == "live":
         return "paper", "MODE=live in .env is ignored at boot — going live requires /mode live + /confirm"
     return "paper", ""
