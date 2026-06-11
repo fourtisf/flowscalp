@@ -35,7 +35,7 @@ class StubEngine:
 def mk_update(uid, text=""):
     replies = []
 
-    async def reply_text(t, parse_mode=None):
+    async def reply_text(t, parse_mode=None, **kw):
         replies.append(t)
 
     msg = SimpleNamespace(text=text, reply_text=reply_text)
@@ -152,8 +152,9 @@ def mk_update_chat(uid, text=""):
     async def delete():
         state["deleted"] = True
 
-    async def reply_text(t, parse_mode=None):
+    async def reply_text(t, parse_mode=None, **kw):
         state["replies"].append(t)
+        state.setdefault("markups", []).append(kw.get("reply_markup"))
 
     msg = SimpleNamespace(text=text, delete=delete, reply_text=reply_text)
     upd = SimpleNamespace(effective_user=SimpleNamespace(id=uid),
@@ -262,3 +263,52 @@ async def test_profile_renders(bot):
     await bot.cmd_profile(upd, mk_ctx())
     assert "PROFIL" in replies[0] and "saldo: $10,000.00" in replies[0]
     assert "hari ini" in replies[0] and "total" in replies[0]
+
+
+def mk_callback(uid, data):
+    state = {"edits": [], "markups": []}
+
+    async def answer():
+        pass
+
+    async def edit_message_text(t, **kw):
+        state["edits"].append(t)
+        state["markups"].append(kw.get("reply_markup"))
+
+    q = SimpleNamespace(data=data, answer=answer, edit_message_text=edit_message_text)
+    upd = SimpleNamespace(effective_user=SimpleNamespace(id=uid),
+                          effective_message=SimpleNamespace(text=""),
+                          callback_query=q)
+    return upd, state
+
+
+async def test_bare_set_shows_button_keyboard(bot):
+    upd, st = mk_update_chat(OWNER)
+    await bot.cmd_set(upd, mk_ctx())
+    assert st["markups"] and st["markups"][0] is not None  # inline keyboard attached
+    assert "pilih setting" in st["replies"][0]
+
+
+async def test_callback_value_tap_applies_setting(bot):
+    upd, st = mk_callback(OWNER, "set:risk_pct")
+    await bot.on_callback(upd, mk_ctx())
+    assert "risk_pct = 0.5" in st["edits"][0] and st["markups"][0] is not None
+    upd2, st2 = mk_callback(OWNER, "setv:risk_pct:0.25")
+    await bot.on_callback(upd2, mk_ctx())
+    assert bot.store.current.risk_pct == 0.25
+    assert "0.5 → 0.25" in st2["edits"][0]
+    # out-of-range via callback is rejected too
+    upd3, st3 = mk_callback(OWNER, "setv:risk_pct:9")
+    await bot.on_callback(upd3, mk_ctx())
+    assert "ditolak" in st3["edits"][0] and bot.store.current.risk_pct == 0.25
+
+
+async def test_callback_typed_value_flow(bot):
+    upd, st = mk_callback(OWNER, "sett:tp_r")
+    await bot.on_callback(upd, mk_ctx())
+    assert "ketik nilai baru untuk tp_r" in st["edits"][0]
+    upd2, replies2 = mk_update(OWNER, "2.2")
+    upd2.effective_message.text = "2.2"
+    await bot.on_text(upd2, mk_ctx())
+    assert bot.store.current.tp_r == 2.2
+    assert any("tp_r: 1.8 → 2.2" in r for r in replies2)

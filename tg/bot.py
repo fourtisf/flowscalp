@@ -17,13 +17,32 @@ import time
 from functools import wraps
 from typing import Optional
 
-from telegram import BotCommand, Update
-from telegram.ext import (Application, ApplicationBuilder, CommandHandler, ContextTypes,
-                          MessageHandler, filters)
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (Application, ApplicationBuilder, CallbackQueryHandler,
+                          CommandHandler, ContextTypes, MessageHandler, filters)
 
-from config import update_env_file
+from config import RANGES, update_env_file
 from core.state import Pos
 from tg import messages
+
+# tap-to-set value suggestions for the /set inline keyboard
+PRESETS = {
+    "risk_pct": [0.1, 0.25, 0.5, 1.0, 2.0],
+    "sl_cap_pct": [0.3, 0.4, 0.5, 0.7, 1.0],
+    "sl_buffer_pct": [0.03, 0.05, 0.1, 0.15],
+    "tp_r": [1.2, 1.5, 1.8, 2.2, 3.0],
+    "time_stop_min": [10, 15, 20, 30, 60],
+    "leverage_cap": [2, 3, 5, 10],
+    "daily_loss_limit_pct": [2.0, 3.0, 5.0],
+    "max_consec_losses": [3, 4, 5, 6],
+    "cooldown_min": [60, 120, 240, 480],
+    "atr_floor_bps": [4, 8, 12, 20],
+    "atr_ceil_bps": [40, 60, 100, 200],
+    "sweep_lookback": [20, 30, 60, 120],
+    "sweep_min_pen_pct": [0.03, 0.05, 0.1, 0.2],
+    "maker_timeout_s": [10, 20, 30, 60],
+    "sweep_vol_mult": [1.0, 1.5, 1.7, 2.2, 3.0],
+}
 
 _KEY_RE = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
 _ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -166,6 +185,7 @@ class TgBot:
         ]:
             self.app.add_handler(CommandHandler(name, gate(fn)))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gate(self.on_text)))
+        self.app.add_handler(CallbackQueryHandler(gate(self.on_callback)))
         await self.app.initialize()
         await self.app.start()
         await self.app.updater.start_polling(allowed_updates=["message"])
@@ -260,7 +280,7 @@ class TgBot:
         spec = _ENV_SPECS[name]
         arg = context.args[0].strip() if context.args else ""
         if not arg:
-            self._pending_input = (name, time.monotonic())
+            self._pending_input = ("env", name, time.monotonic())
             extra = "kirim 'hapus' untuk mengosongkan, atau " if spec["allow_empty"] else ""
             await self._reply(update,
                               f"OK — sekarang kirim {spec['label']} sebagai pesan berikutnya.\n"
@@ -270,16 +290,96 @@ class TgBot:
         await self._apply_env_value(update, arg, spec)
 
     async def on_text(self, update, context) -> None:
-        """Owner plain text: consumed as the pending credential value, else a hint."""
+        """Owner plain text: consumed as the pending credential/setting value,
+        otherwise a gentle hint."""
         text = (update.effective_message.text or "").strip()
         pend, self._pending_input = self._pending_input, None
-        if pend and time.monotonic() - pend[1] <= PENDING_INPUT_TTL_S:
+        if pend and time.monotonic() - pend[2] <= PENDING_INPUT_TTL_S:
+            kind, name = pend[0], pend[1]
             if text.lower() in ("batal", "cancel"):
                 await self._reply(update, "dibatalkan.")
                 return
-            await self._apply_env_value(update, text, _ENV_SPECS[pend[0]])
+            if kind == "env":
+                await self._apply_env_value(update, text, _ENV_SPECS[name])
+                return
+            ok, old, new = await self.store.set(name, text)
+            if ok:
+                await self.db.log_event("INFO", f"/set {name}: {old} → {new}")
+                await self._reply(update, f"✅ {name}: {old} → {new}")
+            else:
+                await self._reply(update, f"⚠️ ditolak: {new}")
             return
         await self._reply(update, "saya hanya merespons perintah — tekan tombol Menu atau ketik /")
+
+    # -- /set inline keyboard --------------------------------------------------
+    def _settings_keyboard(self) -> InlineKeyboardMarkup:
+        rows, row = [], []
+        for k in RANGES:
+            row.append(InlineKeyboardButton(k, callback_data=f"set:{k}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        return InlineKeyboardMarkup(rows)
+
+    def _value_keyboard(self, key: str) -> InlineKeyboardMarkup:
+        spec = RANGES[key]
+        if spec["type"] is bool:
+            vals = ["on", "off"]
+        elif key in PRESETS:
+            vals = [str(v) for v in PRESETS[key]]
+        else:
+            vals = []
+        rows = [[InlineKeyboardButton(v, callback_data=f"setv:{key}:{v}") for v in vals[i:i + 3]]
+                for i in range(0, len(vals), 3)]
+        rows.append([InlineKeyboardButton("✏️ ketik nilai", callback_data=f"sett:{key}"),
+                     InlineKeyboardButton("« kembali", callback_data="set:__list__")])
+        return InlineKeyboardMarkup(rows)
+
+    def _key_detail(self, key: str) -> str:
+        spec = RANGES[key]
+        cur = getattr(self.store.current, key)
+        if isinstance(cur, tuple):
+            cur = ", ".join(cur) or "(kosong)"
+        rng = f"\nrentang: {spec['min']}–{spec['max']}" if "min" in spec else ""
+        return f"{key} = {cur}{rng}\n{spec.get('desc', '')}\n\npilih nilai baru:"
+
+    async def on_callback(self, update, context) -> None:
+        q = update.callback_query
+        try:
+            await q.answer()
+        except Exception:  # noqa: BLE001
+            pass
+        data = q.data or ""
+        if data == "set:__list__":
+            await q.edit_message_text("pilih setting yang mau diubah:",
+                                      reply_markup=self._settings_keyboard())
+            return
+        if data.startswith("setv:"):
+            _, key, val = data.split(":", 2)
+            ok, old, new = await self.store.set(key, val)
+            if ok:
+                await self.db.log_event("INFO", f"/set {key}: {old} → {new}")
+                await q.edit_message_text(f"✅ {key}: {old} → {new}\n\nubah yang lain?",
+                                          reply_markup=self._settings_keyboard())
+            else:
+                await q.edit_message_text(f"⚠️ ditolak: {new}",
+                                          reply_markup=self._value_keyboard(key))
+            return
+        if data.startswith("sett:"):
+            key = data.split(":", 1)[1]
+            self._pending_input = ("setting", key, time.monotonic())
+            spec = RANGES.get(key, {})
+            rng = f" [{spec['min']}–{spec['max']}]" if "min" in spec else ""
+            await q.edit_message_text(f"ketik nilai baru untuk {key}{rng} sebagai pesan"
+                                      f" berikutnya. ('batal' untuk membatalkan)")
+            return
+        if data.startswith("set:"):
+            key = data.split(":", 1)[1]
+            if key in RANGES:
+                await q.edit_message_text(self._key_detail(key),
+                                          reply_markup=self._value_keyboard(key))
 
     async def _apply_env_value(self, update, raw: str, spec: dict) -> None:
         chat_id = update.effective_chat.id
@@ -341,10 +441,17 @@ class TgBot:
         await self._reply(update, messages.position_text(pos, self._upnl() or 0.0, minutes))
 
     async def cmd_set(self, update, context) -> None:
-        if len(context.args) < 2:
-            await self._reply(update, "cara pakai: /set <key> <nilai>\n"
-                                      "contoh: /set risk_pct 0.25\n"
-                                      "daftar key + penjelasan: /settings")
+        if len(context.args) == 0:
+            await update.effective_message.reply_text(
+                "pilih setting yang mau diubah:", reply_markup=self._settings_keyboard())
+            return
+        if len(context.args) == 1:
+            key = context.args[0]
+            if key in RANGES:
+                await update.effective_message.reply_text(
+                    self._key_detail(key), reply_markup=self._value_keyboard(key))
+            else:
+                await self._reply(update, f"key {key!r} tidak dikenal — lihat /settings")
             return
         key, value = context.args[0], " ".join(context.args[1:])
         ok, old, new = await self.store.set(key, value)
