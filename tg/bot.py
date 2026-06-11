@@ -116,6 +116,7 @@ class TgBot:
         self.app = ApplicationBuilder().token(self.env.tg_bot_token).build()
         gate = owner_gate(self.env, self.db)
         for name, fn in [
+            ("start", self.cmd_start), ("help", self.cmd_start),
             ("status", self.cmd_status), ("pnl", self.cmd_pnl), ("positions", self.cmd_positions),
             ("set", self.cmd_set), ("settings", self.cmd_settings), ("pause", self.cmd_pause),
             ("resume", self.cmd_resume), ("stop", self.cmd_stop), ("mode", self.cmd_mode),
@@ -151,6 +152,19 @@ class TgBot:
         return d * (mid - pos.entry_px) * pos.filled_sz
 
     # -- commands ----------------------------------------------------------
+    async def cmd_start(self, update, context) -> None:
+        await self._reply(update,
+                          "FlowScalp ready.\n"
+                          "/status              state, equity, day PnL\n"
+                          "/pnl [day|week|all]  realized PnL stats\n"
+                          "/positions           open position detail\n"
+                          "/set <key> <value>   adjust a setting\n"
+                          "/settings            full settings dump\n"
+                          "/pause /resume       gate new entries\n"
+                          "/stop                KILL SWITCH (flatten now)\n"
+                          "/mode paper|live     live needs /confirm <code>\n"
+                          "/report              post summary to channel")
+
     async def cmd_status(self, update, context) -> None:
         st = self.state
         equity = await self.engine.executor.equity() if self.engine.executor else 0.0
