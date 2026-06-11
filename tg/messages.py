@@ -118,13 +118,12 @@ def profile_text(st, equity: float, day: dict, week: dict, alls: dict) -> str:
 
 
 def settings_text(settings) -> str:
-    from config import RANGES
+    from config import LABELS, RANGES
     rows = []
     for k, v in settings.model_dump().items():
         spec = RANGES.get(k, {})
         if isinstance(v, tuple):
-            v = ", ".join(v) or "(none)"
+            v = ", ".join(v) or "(kosong)"
         rng = f" [{spec['min']}–{spec['max']}]" if "min" in spec else ""
-        desc = spec.get("desc", "")
-        rows.append(f"• {k} = {v}{rng}\n   {desc}")
+        rows.append(f"• {LABELS.get(k, k)}: {v}{rng}\n   {spec.get('desc', '')} ({k})")
     return "\n".join(rows)

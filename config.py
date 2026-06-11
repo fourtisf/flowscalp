@@ -147,6 +147,31 @@ RANGES: dict[str, dict[str, Any]] = {
                              "desc": "filter tren EMA200 15m (di atas = long saja, di bawah = short)"},
 }
 
+# Human-friendly button/display labels (Indonesian) for each setting key
+LABELS: dict[str, str] = {
+    "risk_pct": "Risiko per trade (%)",
+    "sl_cap_pct": "Batas jarak SL (%)",
+    "sl_buffer_pct": "Buffer SL (%)",
+    "tp_r": "Target profit (R)",
+    "time_stop_min": "Batas waktu posisi (menit)",
+    "leverage_cap": "Leverage maksimum",
+    "daily_loss_limit_pct": "Batas rugi harian (%)",
+    "max_consec_losses": "Maks kalah beruntun",
+    "cooldown_min": "Lama istirahat (menit)",
+    "atr_floor_bps": "Volatilitas minimum (bps)",
+    "atr_ceil_bps": "Volatilitas maksimum (bps)",
+    "sweep_lookback": "Lookback sweep (bar)",
+    "sweep_min_pen_pct": "Penetrasi sweep min (%)",
+    "maker_timeout_s": "Timeout entry (detik)",
+    "allow_taker_entry": "Kejar entry pakai market",
+    "sweep_vol_mult": "Filter volume sweep (x)",
+    "cvd_filter": "Filter order flow (CVD)",
+    "session_windows": "Jam trading (UTC)",
+    "blackout_windows": "Jam hindari berita (UTC)",
+    "funding_filter": "Filter funding",
+    "bias_filter": "Filter tren 15m",
+}
+
 _TRUE = {"true", "1", "on", "yes"}
 _FALSE = {"false", "0", "off", "no"}
 

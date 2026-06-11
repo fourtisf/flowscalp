@@ -292,7 +292,7 @@ async def test_bare_set_shows_button_keyboard(bot):
 async def test_callback_value_tap_applies_setting(bot):
     upd, st = mk_callback(OWNER, "set:risk_pct")
     await bot.on_callback(upd, mk_ctx())
-    assert "risk_pct = 0.5" in st["edits"][0] and st["markups"][0] is not None
+    assert "risk_pct" in st["edits"][0] and "0.5" in st["edits"][0] and st["markups"][0] is not None
     upd2, st2 = mk_callback(OWNER, "setv:risk_pct:0.25")
     await bot.on_callback(upd2, mk_ctx())
     assert bot.store.current.risk_pct == 0.25

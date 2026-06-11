@@ -21,7 +21,7 @@ from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Upd
 from telegram.ext import (Application, ApplicationBuilder, CallbackQueryHandler,
                           CommandHandler, ContextTypes, MessageHandler, filters)
 
-from config import RANGES, update_env_file
+from config import LABELS, RANGES, update_env_file
 from core.state import Pos
 from tg import messages
 
@@ -317,14 +317,9 @@ class TgBot:
 
     # -- /set inline keyboard --------------------------------------------------
     def _settings_keyboard(self) -> InlineKeyboardMarkup:
-        rows, row = [], []
-        for k in RANGES:
-            row.append(InlineKeyboardButton(k, callback_data=f"set:{k}"))
-            if len(row) == 2:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
+        # one clear Indonesian label per row — raw keys confuse non-developers
+        rows = [[InlineKeyboardButton(LABELS.get(k, k), callback_data=f"set:{k}")]
+                for k in RANGES]
         return InlineKeyboardMarkup(rows)
 
     def _value_keyboard(self, key: str) -> InlineKeyboardMarkup:
@@ -346,8 +341,12 @@ class TgBot:
         cur = getattr(self.store.current, key)
         if isinstance(cur, tuple):
             cur = ", ".join(cur) or "(kosong)"
-        rng = f"\nrentang: {spec['min']}–{spec['max']}" if "min" in spec else ""
-        return f"{key} = {cur}{rng}\n{spec.get('desc', '')}\n\npilih nilai baru:"
+        rng = f"\nrentang aman: {spec['min']}–{spec['max']}" if "min" in spec else ""
+        return (f"⚙️ {LABELS.get(key, key)}\n"
+                f"{spec.get('desc', '')}\n\n"
+                f"nilai sekarang: {cur}{rng}\n"
+                f"(nama teknis: {key})\n\n"
+                f"pilih nilai baru:")
 
     async def on_callback(self, update, context) -> None:
         q = update.callback_query
@@ -365,7 +364,8 @@ class TgBot:
             ok, old, new = await self.store.set(key, val)
             if ok:
                 await self.db.log_event("INFO", f"/set {key}: {old} → {new}")
-                await q.edit_message_text(f"✅ {key}: {old} → {new}\n\nubah yang lain?",
+                await q.edit_message_text(f"✅ {LABELS.get(key, key)}: {old} → {new}\n\n"
+                                          f"ubah yang lain?",
                                           reply_markup=self._settings_keyboard())
             else:
                 await q.edit_message_text(f"⚠️ ditolak: {new}",
