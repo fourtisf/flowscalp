@@ -49,6 +49,10 @@ _ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 PENDING_INPUT_TTL_S = 120
 
+# update types Telegram is asked to deliver; callback_query MUST be present
+# or inline-keyboard taps are silently never delivered to the bot
+ALLOWED_UPDATES = ["message", "callback_query"]
+
 _ENV_SPECS = {
     "setkey": {"env_key": "HL_AGENT_PRIVATE_KEY", "label": "API key agent",
                "pattern": _KEY_RE, "secret": True, "allow_empty": False},
@@ -188,7 +192,7 @@ class TgBot:
         self.app.add_handler(CallbackQueryHandler(gate(self.on_callback)))
         await self.app.initialize()
         await self.app.start()
-        await self.app.updater.start_polling(allowed_updates=["message"])
+        await self.app.updater.start_polling(allowed_updates=ALLOWED_UPDATES)
         try:
             await self.app.bot.set_my_commands([BotCommand(c, d) for c, d in BOT_COMMANDS])
         except Exception as e:  # noqa: BLE001 — menu registration is cosmetic

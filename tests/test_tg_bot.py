@@ -312,3 +312,10 @@ async def test_callback_typed_value_flow(bot):
     await bot.on_text(upd2, mk_ctx())
     assert bot.store.current.tp_r == 2.2
     assert any("tp_r: 1.8 → 2.2" in r for r in replies2)
+
+
+def test_callback_updates_are_subscribed():
+    """Regression: inline-keyboard taps arrive as callback_query updates —
+    polling must subscribe to them or buttons silently do nothing."""
+    from tg.bot import ALLOWED_UPDATES
+    assert "callback_query" in ALLOWED_UPDATES and "message" in ALLOWED_UPDATES
