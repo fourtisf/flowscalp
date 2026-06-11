@@ -229,6 +229,11 @@ class Engine:
             if target == "live":
                 ex = LiveExecutor(self.env, self.db, lambda: self.feed.mid)
                 await ex.boot()
+                eq = await ex.equity()
+                if eq <= 0:
+                    raise RuntimeError(
+                        f"equity akun live ${eq:,.2f} — alamat wallet utama salah (/setwallet)"
+                        f" atau belum ada deposit. Tetap di paper.")
                 szi, _, orders = await ex.reconcile_raw()
                 if szi != 0 or orders:
                     self.executor = ex

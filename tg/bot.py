@@ -190,6 +190,15 @@ class TgBot:
     async def _reply(update: Update, text: str) -> None:
         await update.effective_message.reply_text(text)
 
+    async def _submit_reply(self, update: Update, name: str, **kw) -> None:
+        """Run an engine command and ALWAYS reply — failures included."""
+        try:
+            await self._reply(update, await self.engine.submit(name, **kw))
+        except Exception as e:  # noqa: BLE001 — surface the failure to the owner
+            log.exception("command %s failed", name)
+            await self.db.log_event("ERROR", f"/{name} gagal: {e}")
+            await self._reply(update, f"⚠️ gagal: {e}")
+
     def _upnl(self) -> Optional[float]:
         pos, mid = self.state.position, self.feed.mid
         if pos is None or not pos.ts_open or not mid:
@@ -346,13 +355,13 @@ class TgBot:
         await self._reply(update, messages.settings_text(self.store.current))
 
     async def cmd_pause(self, update, context) -> None:
-        await self._reply(update, await self.engine.submit("pause"))
+        await self._submit_reply(update, "pause")
 
     async def cmd_resume(self, update, context) -> None:
-        await self._reply(update, await self.engine.submit("resume"))
+        await self._submit_reply(update, "resume")
 
     async def cmd_stop(self, update, context) -> None:
-        await self._reply(update, await self.engine.submit("stop"))
+        await self._submit_reply(update, "stop")
 
     async def cmd_mode(self, update, context) -> None:
         target = (context.args[0].lower() if context.args else "")
@@ -360,7 +369,7 @@ class TgBot:
             await self._reply(update, "cara pakai: /mode paper|live")
             return
         if target == "paper":
-            await self._reply(update, await self.engine.submit("mode", target="paper"))
+            await self._submit_reply(update, "mode", target="paper")
             return
         if self.state.pos_state != Pos.FLAT:
             await self._reply(update, "masih ada posisi/order terbuka — /stop dulu sebelum live")
@@ -371,12 +380,15 @@ class TgBot:
 
     async def cmd_confirm(self, update, context) -> None:
         code = context.args[0] if context.args else ""
+        if not code:
+            await self._reply(update, "cara pakai: /confirm <kode> (kode dari /mode live)")
+            return
         if not self.confirm.check(code):
             await self._reply(update, "kode salah atau kedaluwarsa — ulangi /mode live")
             await self.db.log_event("WARN", "live confirm failed (bad/expired code)")
             return
         await self.db.log_event("INFO", "live mode confirmed by owner")
-        await self._reply(update, await self.engine.submit("mode", target="live"))
+        await self._submit_reply(update, "mode", target="live")
 
     async def cmd_report(self, update, context) -> None:
-        await self._reply(update, await self.engine.submit("report"))
+        await self._submit_reply(update, "report")
