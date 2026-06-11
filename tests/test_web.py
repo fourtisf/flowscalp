@@ -98,3 +98,30 @@ async def test_summary_trades_equity_match_db(client):
     assert eq and eq[-1]["equity"] == pytest.approx(10_031.5)
     r = await client.get("/api/equity?range=2y", headers=AUTH)
     assert r.status_code == 422
+
+
+async def test_public_mode_skips_auth(tmp_path):
+    """DASH_PUBLIC=true → owner-opted open read-only dashboard."""
+    db = Database(str(tmp_path / "pub.db"))
+    await db.connect()
+    try:
+        store = SettingsStore(db)
+        await store.load()
+        state = BotState(str(tmp_path / "s2.json"), mode="paper")
+        feed = SimpleNamespace(mid=1.0, deltas_1m=[])
+
+        async def eq():
+            return 1000.0
+        engine = SimpleNamespace(executor=SimpleNamespace(equity=eq, name="paper"))
+
+        class _PubEnv:
+            dash_bearer_token = "sekret123"
+            dash_public = True
+        app = create_app(_PubEnv(), db, state, feed, store, engine)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            r = await c.get("/api/status")          # no Authorization header
+            assert r.status_code == 200
+            assert r.json()["equity"] == 1000.0
+    finally:
+        await db.close()

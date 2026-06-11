@@ -39,6 +39,8 @@ class Env:
     log_dir: str
     dash_host: str
     dash_port: int
+    dash_public: bool = False        # True = dashboard open without bearer token
+    dash_public_url: str = ""        # optional fixed URL reported by /dashboard
 
     @property
     def api_url(self) -> str:
@@ -73,6 +75,8 @@ class Env:
             log_dir=os.environ.get("LOG_DIR", "logs").strip(),
             dash_host=os.environ.get("DASH_HOST", "127.0.0.1").strip(),
             dash_port=int(os.environ.get("DASH_PORT", "8080")),
+            dash_public=os.environ.get("DASH_PUBLIC", "").strip().lower() in _TRUE,
+            dash_public_url=os.environ.get("DASH_PUBLIC_URL", "").strip().rstrip("/"),
         )
 
 

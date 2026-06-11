@@ -30,6 +30,8 @@ def create_app(env, db, state, feed, store, engine) -> FastAPI:
     app = FastAPI(title="FlowScalp", docs_url=None, redoc_url=None, openapi_url=None)
 
     async def auth(authorization: Optional[str] = Header(None)) -> None:
+        if getattr(env, "dash_public", False):
+            return  # owner chose an open read-only dashboard
         expected = f"Bearer {env.dash_bearer_token}"
         if (not env.dash_bearer_token or authorization is None
                 or not secrets.compare_digest(authorization, expected)):

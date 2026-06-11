@@ -271,7 +271,15 @@ class TgBot:
         await self._reply(update, messages.profile_text(st, equity, day, week, alls))
 
     async def cmd_dashboard(self, update, context) -> None:
-        """Send the live dashboard URL (Cloudflare quick tunnel) + token."""
+        """Send the dashboard URL: fixed public URL if configured, else tunnel."""
+        token = getattr(self.env, "dash_bearer_token", "")
+        fixed = getattr(self.env, "dash_public_url", "")
+        if fixed:
+            if getattr(self.env, "dash_public", False):
+                await self._reply(update, f"📊 dashboard real-time (tanpa login):\n{fixed}")
+            else:
+                await self._reply(update, f"📊 dashboard — ketuk, langsung masuk:\n{fixed}/#{token}")
+            return
         db_path = getattr(self.env, "db_path", "data/flowscalp.db")
         path = os.path.join(os.path.dirname(db_path) or ".", "tunnel_url.txt")
         url = None
@@ -280,7 +288,6 @@ class TgBot:
                 url = f.read().strip() or None
         except OSError:
             pass
-        token = getattr(self.env, "dash_bearer_token", "")
         if url:
             await self._reply(update,
                               f"📊 dashboard — ketuk, langsung masuk tanpa login:\n"
