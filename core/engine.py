@@ -284,6 +284,24 @@ class Engine:
             return "posisi ditutup di harga pasar ✅"
         return f"tidak bisa: {st.pos_state.value}"
 
+    async def _cmd_closemaker(self) -> str:
+        """Eco close: pull the reduce-only TP limit to the current mid so the
+        exit fills as maker. SL stays armed; not guaranteed to fill."""
+        st = self.state
+        pos = st.position
+        if pos is None or st.pos_state != Pos.IN_POSITION:
+            return "tidak ada posisi terbuka (atau entry masih pending)"
+        mid = self.feed.mid
+        if not mid:
+            return "harga belum tersedia"
+        pos.tp_is_manual = True
+        pos.tp_px = mid
+        await self.executor.move_tp(pos, mid)
+        st.save_snapshot()
+        return (f"💚 limit penutup dipasang @ {mid:,.0f} (fee maker, murah).\n"
+                f"terisi begitu harga melewatinya; SL tetap berjaga.\n"
+                f"kalau harga kabur dan Anda ingin pasti keluar → tombol market.")
+
     async def _cmd_testtrade(self) -> str:
         """Inject one synthetic trade (paper only) to exercise the full
         entry→manage→exit pipeline on demand."""
@@ -427,14 +445,12 @@ class Engine:
         pos.fees_usd += f.fee_usd
         # explicit fill kind/reason wins; oid matching is the fallback for raw
         # live fills (an oid collision must never relabel a manual close)
-        if f.kind in ("tp", "sl"):
-            reason = f.kind
+        if f.kind == "sl" or (f.kind == "" and f.oid == pos.oids.get("sl")):
+            reason = "sl"
+        elif f.kind == "tp" or (f.kind == "" and f.oid == pos.oids.get("tp")):
+            reason = "manual" if pos.tp_is_manual else "tp"
         elif f.kind == "flatten" and (f.reason or pos.pending_exit_reason):
             reason = f.reason or pos.pending_exit_reason
-        elif f.oid == pos.oids.get("tp"):
-            reason = "tp"
-        elif f.oid == pos.oids.get("sl"):
-            reason = "sl"
         else:
             reason = f.reason or pos.pending_exit_reason or "manual"
         if pos.exit_sz + self._sz_eps >= pos.filled_sz:

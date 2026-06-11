@@ -392,12 +392,15 @@ class TgBot:
         except Exception:  # noqa: BLE001
             pass
         data = q.data or ""
-        if data == "closepos":
+        if data in ("closepos", "closemaker"):
             try:
-                res = await self.engine.submit("closepos")
+                res = await self.engine.submit(data)
             except Exception as e:  # noqa: BLE001
                 res = f"⚠️ gagal menutup: {e}"
-            await q.edit_message_text(res)
+            # eco close leaves the position open until the limit fills →
+            # keep the buttons available; market close ends it
+            kb = self._CLOSE_KB if data == "closemaker" and "dipasang" in res else None
+            await q.edit_message_text(res, reply_markup=kb)
             return
         if data == "set:__list__":
             await q.edit_message_text("pilih setting yang mau diubah:",
@@ -492,8 +495,10 @@ class TgBot:
         minutes = int((time.time() * 1000 - pos.ts_open) / 60_000)
         return messages.position_text(pos, self._upnl() or 0.0, minutes)
 
-    _CLOSE_KB = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Tutup posisi sekarang",
-                                                            callback_data="closepos")]])
+    _CLOSE_KB = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💚 Tutup hemat (limit, fee murah)", callback_data="closemaker")],
+        [InlineKeyboardButton("🛑 Tutup sekarang (market, pasti)", callback_data="closepos")],
+    ])
 
     async def cmd_positions(self, update, context) -> None:
         text = self._position_view()

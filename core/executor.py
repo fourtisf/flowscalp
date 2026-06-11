@@ -187,6 +187,9 @@ class PaperExecutor:
     async def cancel_all(self) -> None:
         self._pending = None
 
+    async def move_tp(self, pos: Position, new_px: float) -> None:
+        self._armed = pos  # px already updated on the shared Position
+
     def disarm(self) -> None:
         self._armed = None
 
@@ -403,6 +406,18 @@ class LiveExecutor:
         if orders:
             cancels = [{"coin": "BTC", "oid": o["oid"]} for o in orders]
             await self._retry("cancel_all", self._exchange.bulk_cancel, cancels)
+
+    async def move_tp(self, pos: Position, new_px: float) -> None:
+        """Re-point the reduce-only TP limit (eco close pulls it to mid)."""
+        old = pos.oids.get("tp")
+        if old:
+            await self.cancel_entry(old)
+        is_buy_exit = pos.side == "short"
+        sz = pos.filled_sz - pos.exit_sz
+        resp = await self._retry(
+            "move_tp", self._exchange.order, "BTC", is_buy_exit, sz,
+            round_px(new_px, self.sz_decimals), {"limit": {"tif": "Gtc"}}, True)
+        pos.oids["tp"], _ = self._oid_from_response(resp)
 
     async def flatten(self, reason: str) -> None:
         """Cancel all, then IOC reduce-only at mid ± 0.2%; retry once on partial."""

@@ -257,3 +257,29 @@ async def test_manual_close_button_path(harness):
     tr = (await db.recent_trades("paper", 1))[0]
     assert tr["exit_reason"] == "manual"
     assert "tidak ada posisi" in await engine._cmd_closepos()
+
+
+async def test_eco_close_fills_as_maker_and_books_manual(harness):
+    engine, db, feed, state, notifier, sig_bar = await harness()
+    feed.mid = 100_000.0
+    await engine._cmd_testtrade()
+    await engine._dispatch("mid", state.position.entry_px - 5)   # fill entry
+    assert state.pos_state == Pos.IN_POSITION
+    entry = state.position.entry_px
+
+    feed.mid = entry + 30
+    res = await engine._cmd_closemaker()
+    assert "limit penutup dipasang" in res
+    assert state.position.tp_px == pytest.approx(entry + 30)
+
+    # a bar trading through the pulled limit fills it as MAKER
+    maker_fee = engine.executor.maker_fee
+    bar = Candle(sig_bar.ts + 5 * MIN, entry, entry + 60, entry - 10, entry + 40, 100.0)
+    await engine._dispatch("candle_1m_closed", bar)
+    assert state.pos_state == Pos.FLAT
+    tr = (await db.recent_trades("paper", 1))[0]
+    assert tr["exit_reason"] == "manual"                  # eco close, honest label
+    assert tr["exit_px"] == pytest.approx(entry + 30)
+    expected_exit_fee = (entry + 30) * tr["size_btc"] * maker_fee
+    assert tr["fees_usd"] == pytest.approx(
+        entry * tr["size_btc"] * maker_fee + expected_exit_fee, rel=1e-9)

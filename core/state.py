@@ -61,6 +61,7 @@ class Position:
     taker_sent_ts: int = 0     # IOC fallback entry sent, ms (0 = none)
     pending_exit_reason: str = ""
     sl_cross_ts: int = 0       # engine-side backup stop bookkeeping
+    tp_is_manual: bool = False # TP was pulled to mid by the eco-close button
 
 
 def utc_day(ts_ms: Optional[int] = None) -> str:
