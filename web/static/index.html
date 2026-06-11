@@ -161,7 +161,8 @@ async function refresh(){
       `<div class="kv"><span class="label">in trade</span><span>${p.minutes}m</span></div>`;
 
     $("trades").innerHTML = trades.map(t=>{
-      const d=new Date(t.ts_close).toISOString().slice(5,16).replace("T"," ");
+      const d=new Date(t.ts_close).toLocaleString("id-ID",
+        {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
       const rc=t.r_multiple>=0?"pos":"neg";
       return `<tr><td class="l">${d}</td><td>${t.side}</td><td>${px(t.entry_px)}</td>`+
         `<td>${px(t.exit_px)}</td><td class="${rc}">${t.r_multiple>=0?"+":""}${t.r_multiple.toFixed(2)}</td>`+

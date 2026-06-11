@@ -1,0 +1,9 @@
+[Unit]
+Description=FlowScalp dashboard tunnel (Cloudflare quick tunnel)
+After=network-online.target flowscalp.service
+[Service]
+ExecStart=/opt/flowscalp/deploy/tunnel.sh
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

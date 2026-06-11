@@ -72,6 +72,7 @@ BOT_COMMANDS = [
     ("setkey", "simpan API key agent Hyperliquid"),
     ("setwallet", "simpan alamat wallet utama"),
     ("setsub", "simpan alamat subaccount (opsional)"),
+    ("dashboard", "link pantau PnL real-time"),
     ("pause", "tahan entry baru"),
     ("resume", "lanjutkan / bangunkan bot"),
     ("stop", "DARURAT: batalkan order & tutup posisi"),
@@ -183,7 +184,8 @@ class TgBot:
             ("pnl", self.cmd_pnl), ("positions", self.cmd_positions),
             ("set", self.cmd_set), ("settings", self.cmd_settings),
             ("setkey", self.cmd_setkey), ("setwallet", self.cmd_setwallet),
-            ("setsub", self.cmd_setsub), ("pause", self.cmd_pause),
+            ("setsub", self.cmd_setsub), ("dashboard", self.cmd_dashboard),
+            ("pause", self.cmd_pause),
             ("resume", self.cmd_resume), ("stop", self.cmd_stop), ("mode", self.cmd_mode),
             ("confirm", self.cmd_confirm), ("report", self.cmd_report),
         ]:
@@ -246,6 +248,7 @@ class TgBot:
                           "/setkey <key> – simpan API key agent HL (pesan auto-terhapus)\n"
                           "/setwallet <0x…> – simpan alamat wallet utama\n"
                           "/setsub <0x…> – simpan alamat subaccount\n"
+                          "/dashboard – link web pantau PnL real-time\n"
                           "/pause • /resume – tahan / lanjutkan entry baru\n"
                           "/stop – TOMBOL DARURAT: tutup semua sekarang\n"
                           "/mode paper|live – ganti mode (live butuh /confirm <kode>)\n"
@@ -266,6 +269,33 @@ class TgBot:
         week = await self.db.summary(st.mode, since_ts=now - 7 * 86_400_000)
         alls = await self.db.summary(st.mode)
         await self._reply(update, messages.profile_text(st, equity, day, week, alls))
+
+    async def cmd_dashboard(self, update, context) -> None:
+        """Send the live dashboard URL (Cloudflare quick tunnel) + token."""
+        db_path = getattr(self.env, "db_path", "data/flowscalp.db")
+        path = os.path.join(os.path.dirname(db_path) or ".", "tunnel_url.txt")
+        url = None
+        try:
+            with open(path) as f:
+                url = f.read().strip() or None
+        except OSError:
+            pass
+        token = getattr(self.env, "dash_bearer_token", "")
+        if url:
+            await self._reply(update,
+                              f"📊 dashboard real-time:\n{url}\n\n"
+                              f"token (tempel sekali di halaman):\n{token}\n\n"
+                              f"isi: PnL live, kurva equity, posisi terbuka, riwayat trade "
+                              f"(jam, entry, exit, R, $, alasan). refresh otomatis 5 detik.\n"
+                              f"catatan: URL berganti kalau tunnel di-restart — cek lagi "
+                              f"dengan /dashboard.")
+        else:
+            await self._reply(update,
+                              "tunnel dashboard belum aktif di VPS.\n"
+                              "aktifkan sekali (sebagai root):\n"
+                              "systemctl enable --now flowscalp-tunnel\n\n"
+                              "alternatif tanpa tunnel: VS Code panel PORTS → Forward 8080 →"
+                              " buka http://localhost:8080")
 
     # -- credential setters (.env writers) -----------------------------------
     # A bare command (e.g. tapped from the Telegram menu) arms a 2-minute

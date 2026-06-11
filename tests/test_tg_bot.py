@@ -319,3 +319,16 @@ def test_callback_updates_are_subscribed():
     polling must subscribe to them or buttons silently do nothing."""
     from tg.bot import ALLOWED_UPDATES
     assert "callback_query" in ALLOWED_UPDATES and "message" in ALLOWED_UPDATES
+
+
+async def test_dashboard_command(bot, tmp_path):
+    bot.env.db_path = str(tmp_path / "flowscalp.db")
+    bot.env.dash_bearer_token = "tok123"
+    upd, replies = mk_update(OWNER)
+    await bot.cmd_dashboard(upd, mk_ctx())
+    assert "belum aktif" in replies[0]          # no tunnel file yet
+    (tmp_path / "tunnel_url.txt").write_text("https://abc-def.trycloudflare.com\n")
+    upd2, replies2 = mk_update(OWNER)
+    await bot.cmd_dashboard(upd2, mk_ctx())
+    assert "https://abc-def.trycloudflare.com" in replies2[0]
+    assert "tok123" in replies2[0]
