@@ -1,0 +1,12 @@
+[Unit]
+Description=FlowScalp BTC scalper
+After=network-online.target
+[Service]
+User=flowscalp
+WorkingDirectory=/opt/flowscalp
+EnvironmentFile=/opt/flowscalp/.env
+ExecStart=/opt/flowscalp/venv/bin/python main.py
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
