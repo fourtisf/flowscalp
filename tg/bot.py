@@ -7,7 +7,6 @@ must send /confirm <code> within 60s or the switch is aborted.
 """
 from __future__ import annotations
 
-import html
 import logging
 import secrets
 import time
@@ -63,9 +62,7 @@ class Notifier:
         log.info("[channel] %s", text.replace("\n", " | "))
         if self.app is None or not self.env.tg_channel_id:
             return
-        await self.app.bot.send_message(chat_id=self.env.tg_channel_id,
-                                        text=f"<pre>{html.escape(text)}</pre>",
-                                        parse_mode="HTML")
+        await self.app.bot.send_message(chat_id=self.env.tg_channel_id, text=text)
 
     async def error(self, text: str) -> None:
         log.error("[alert] %s", text)
@@ -141,8 +138,7 @@ class TgBot:
 
     @staticmethod
     async def _reply(update: Update, text: str) -> None:
-        await update.effective_message.reply_text(f"<pre>{html.escape(text)}</pre>",
-                                                  parse_mode="HTML")
+        await update.effective_message.reply_text(text)
 
     def _upnl(self) -> Optional[float]:
         pos, mid = self.state.position, self.feed.mid
@@ -155,15 +151,15 @@ class TgBot:
     async def cmd_start(self, update, context) -> None:
         await self._reply(update,
                           "FlowScalp ready.\n"
-                          "/status              state, equity, day PnL\n"
-                          "/pnl [day|week|all]  realized PnL stats\n"
-                          "/positions           open position detail\n"
-                          "/set <key> <value>   adjust a setting\n"
-                          "/settings            full settings dump\n"
-                          "/pause /resume       gate new entries\n"
-                          "/stop                KILL SWITCH (flatten now)\n"
-                          "/mode paper|live     live needs /confirm <code>\n"
-                          "/report              post summary to channel")
+                          "/status – state, equity, day PnL\n"
+                          "/pnl day|week|all – realized PnL stats\n"
+                          "/positions – open position detail\n"
+                          "/set <key> <value> – adjust a setting\n"
+                          "/settings – full settings dump\n"
+                          "/pause • /resume – gate new entries\n"
+                          "/stop – KILL SWITCH (flatten now)\n"
+                          "/mode paper|live – live needs /confirm <code>\n"
+                          "/report – post summary to channel")
 
     async def cmd_status(self, update, context) -> None:
         st = self.state

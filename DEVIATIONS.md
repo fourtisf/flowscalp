@@ -99,7 +99,11 @@ be run once on the owner's VPS.
 15. **`/resume` does not clear HALTED_DAILY** (spec lists only
     PAUSED/COOLDOWN/STOPPED) — the daily halt clears at 00:00 UTC only.
 
-16. **Backtest circuit breakers.** §9 only mandates strategy + sizing + fill
+16. **Telegram message format.** §7 specified monospace blocks; the owner
+    requested plain-text messages after first use, so replies and alerts are
+    sent as normal Telegram text.
+
+17. **Backtest circuit breakers.** §9 only mandates strategy + sizing + fill
     rules; the daily-loss halt, loss-streak cooldown and anti-overtrade
     spacing/dedupe are also simulated so backtest trade counts match what the
     live engine would actually take.
