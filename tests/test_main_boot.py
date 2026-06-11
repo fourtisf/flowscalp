@@ -104,3 +104,24 @@ async def test_paper_position_survives_restart(tmp_path):
         assert len(rows) == 1 and rows[0]["id"] == trade_id and rows[0]["exit_reason"] == "tp"
     finally:
         await db.close()
+
+
+def test_auto_relive_policy():
+    class E:
+        mode = "paper"
+        hl_agent_private_key = "k"
+        hl_main_wallet_address = "a"
+        auto_relive = True
+
+    snap_live_flat = {"mode": "live", "position": None}
+    mode, note = decide_boot_mode(E(), snap_live_flat)
+    assert mode == "live" and "AUTO_RELIVE" in note
+    # off (default) → still paper with the re-arm notice
+    e2 = E()
+    e2.auto_relive = False
+    mode, note = decide_boot_mode(e2, snap_live_flat)
+    assert mode == "paper" and "PAPER" in note
+    # no credentials → never auto-relive
+    e3 = E()
+    e3.hl_agent_private_key = ""
+    assert decide_boot_mode(e3, snap_live_flat)[0] == "paper"

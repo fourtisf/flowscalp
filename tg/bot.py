@@ -195,6 +195,7 @@ class TgBot:
         ]:
             self.app.add_handler(CommandHandler(name, gate(fn)))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gate(self.on_text)))
+        self.app.add_handler(MessageHandler(filters.COMMAND, gate(self.on_unknown)))
         self.app.add_handler(CallbackQueryHandler(gate(self.on_callback)))
         await self.app.initialize()
         await self.app.start()
@@ -353,6 +354,16 @@ class TgBot:
                 await self._reply(update, f"⚠️ ditolak: {new}")
             return
         await self._reply(update, "saya hanya merespons perintah — tekan tombol Menu atau ketik /")
+
+    async def on_unknown(self, update, context) -> None:
+        """Unknown /command: suggest the closest real one instead of silence."""
+        import difflib
+        word = (update.effective_message.text or "/").split()[0].lstrip("/").lower()
+        names = [c for c, _ in BOT_COMMANDS]
+        close = difflib.get_close_matches(word, names, n=1, cutoff=0.6)
+        hint = f" — maksud Anda /{close[0]}?" if close else ""
+        await self._reply(update, f"perintah /{word} tidak dikenal{hint}\n"
+                                  f"tekan tombol Menu atau ketik / untuk daftar perintah.")
 
     # -- /set inline keyboard --------------------------------------------------
     def _settings_keyboard(self) -> InlineKeyboardMarkup:

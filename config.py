@@ -41,6 +41,7 @@ class Env:
     dash_port: int
     dash_public: bool = False        # True = dashboard open without bearer token
     dash_public_url: str = ""        # optional fixed URL reported by /dashboard
+    auto_relive: bool = False        # True = a restart restores live mode automatically
 
     @property
     def api_url(self) -> str:
@@ -77,6 +78,7 @@ class Env:
             dash_port=int(os.environ.get("DASH_PORT", "8080")),
             dash_public=os.environ.get("DASH_PUBLIC", "").strip().lower() in _TRUE,
             dash_public_url=os.environ.get("DASH_PUBLIC_URL", "").strip().rstrip("/"),
+            auto_relive=os.environ.get("AUTO_RELIVE", "").strip().lower() in _TRUE,
         )
 
 

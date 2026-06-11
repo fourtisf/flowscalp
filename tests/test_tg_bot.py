@@ -379,3 +379,9 @@ async def test_live_testtrade_button_flow(bot):
     await bot.on_callback(upd3, mk_ctx())
     assert "kedaluwarsa" in st3["edits"][0]
     assert len([c for c in bot.engine_stub.calls if c[0] == "testtrade"]) == 1
+
+
+async def test_unknown_command_suggests_closest(bot):
+    upd, replies = mk_update(OWNER, "/whay")
+    await bot.on_unknown(upd, mk_ctx())
+    assert "tidak dikenal" in replies[0] and "/why" in replies[0]
