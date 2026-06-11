@@ -146,13 +146,16 @@ async def test_status_and_pnl_render(bot):
 
 
 def mk_update_chat(uid, text=""):
-    """Update stub with effective_chat + deletable message (for /setkey etc.)."""
-    state = {"deleted": False, "sent": []}
+    """Update stub with effective_chat + deletable, replyable message."""
+    state = {"deleted": False, "replies": []}
 
     async def delete():
         state["deleted"] = True
 
-    msg = SimpleNamespace(text=text, delete=delete)
+    async def reply_text(t, parse_mode=None):
+        state["replies"].append(t)
+
+    msg = SimpleNamespace(text=text, delete=delete, reply_text=reply_text)
     upd = SimpleNamespace(effective_user=SimpleNamespace(id=uid),
                           effective_message=msg,
                           effective_chat=SimpleNamespace(id=uid))
@@ -200,7 +203,7 @@ async def test_setkey_rejects_garbage_but_still_deletes(bot, tmp_path, monkeypat
     assert not (tmp_path / ".env").exists()
 
 
-async def test_setwallet_and_setsub_roundtrip(bot, tmp_path, monkeypatch):
+async def test_setwallet_direct_and_setsub_clear_via_followup(bot, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     sent = []
     bot.app = _FakeBotApp(sent)
@@ -209,12 +212,49 @@ async def test_setwallet_and_setsub_roundtrip(bot, tmp_path, monkeypatch):
     addr = "0x" + "a1" * 20
     upd, _ = mk_update_chat(OWNER)
     await bot.cmd_setwallet(upd, mk_ctx(addr))
-    upd2, _ = mk_update_chat(OWNER)
-    await bot.cmd_setsub(upd2, mk_ctx())      # empty = clear subaccount
+    # bare /setsub arms a wait, then 'hapus' clears the value
+    upd2, st2 = mk_update_chat(OWNER)
+    await bot.cmd_setsub(upd2, mk_ctx())
+    assert any("kirim" in r for r in st2["replies"])
+    upd3, _ = mk_update_chat(OWNER, "hapus")
+    await bot.on_text(upd3, mk_ctx())
     env = (tmp_path / ".env").read_text()
     assert f"HL_MAIN_WALLET_ADDRESS={addr}" in env
     assert "HL_SUBACCOUNT_ADDRESS=\n" in env or env.endswith("HL_SUBACCOUNT_ADDRESS=")
     assert len(restarts) == 2
+
+
+async def test_bare_command_then_plain_message_flow(bot, tmp_path, monkeypatch):
+    """The menu-tap scenario: /setwallet with no arg, then the address as a
+    plain follow-up message — must be accepted, deleted and stored."""
+    monkeypatch.chdir(tmp_path)
+    sent = []
+    bot.app = _FakeBotApp(sent)
+    restarts = []
+    bot.restarter = lambda: restarts.append(1)
+    addr = "0xeef06bdfbc1c29a80d8049f640ad3b0682fa2744"
+
+    upd, st = mk_update_chat(OWNER)
+    await bot.cmd_setwallet(upd, mk_ctx())            # bare, like a menu tap
+    assert any("kirim" in r for r in st["replies"])
+    upd2, st2 = mk_update_chat(OWNER, addr)
+    await bot.on_text(upd2, mk_ctx())                 # plain follow-up message
+    assert st2["deleted"]
+    assert restarts == [1]
+    assert f"HL_MAIN_WALLET_ADDRESS={addr}" in (tmp_path / ".env").read_text()
+
+    # without a pending request, plain text gets a gentle hint
+    upd3, st3 = mk_update_chat(OWNER, "halo bot")
+    await bot.on_text(upd3, mk_ctx())
+    assert any("perintah" in r for r in st3["replies"])
+
+    # 'batal' cancels a pending request
+    upd4, _ = mk_update_chat(OWNER)
+    await bot.cmd_setkey(upd4, mk_ctx())
+    upd5, st5 = mk_update_chat(OWNER, "batal")
+    await bot.on_text(upd5, mk_ctx())
+    assert any("dibatalkan" in r for r in st5["replies"])
+    assert len(restarts) == 1
 
 
 async def test_profile_renders(bot):

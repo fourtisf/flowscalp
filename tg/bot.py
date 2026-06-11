@@ -18,7 +18,8 @@ from functools import wraps
 from typing import Optional
 
 from telegram import BotCommand, Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (Application, ApplicationBuilder, CommandHandler, ContextTypes,
+                          MessageHandler, filters)
 
 from config import update_env_file
 from core.state import Pos
@@ -26,6 +27,17 @@ from tg import messages
 
 _KEY_RE = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
 _ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+
+PENDING_INPUT_TTL_S = 120
+
+_ENV_SPECS = {
+    "setkey": {"env_key": "HL_AGENT_PRIVATE_KEY", "label": "API key agent",
+               "pattern": _KEY_RE, "secret": True, "allow_empty": False},
+    "setwallet": {"env_key": "HL_MAIN_WALLET_ADDRESS", "label": "alamat wallet utama",
+                  "pattern": _ADDR_RE, "secret": False, "allow_empty": False},
+    "setsub": {"env_key": "HL_SUBACCOUNT_ADDRESS", "label": "alamat subaccount",
+               "pattern": _ADDR_RE, "secret": False, "allow_empty": True},
+}
 
 BOT_COMMANDS = [
     ("status", "kondisi bot, equity, PnL hari ini"),
@@ -130,6 +142,7 @@ class TgBot:
         self.notifier = notifier
         self.confirm = ConfirmFlow()
         self.app: Optional[Application] = None
+        self._pending_input: Optional[tuple[str, float]] = None  # (spec name, armed_ts)
         # replaced in tests; in production a SIGTERM lets systemd restart us
         self.restarter = lambda: asyncio.get_running_loop().call_later(
             3, os.kill, os.getpid(), signal.SIGTERM)
@@ -152,6 +165,7 @@ class TgBot:
             ("confirm", self.cmd_confirm), ("report", self.cmd_report),
         ]:
             self.app.add_handler(CommandHandler(name, gate(fn)))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gate(self.on_text)))
         await self.app.initialize()
         await self.app.start()
         await self.app.updater.start_polling(allowed_updates=["message"])
@@ -218,12 +232,45 @@ class TgBot:
         await self._reply(update, messages.profile_text(st, equity, day, week, alls))
 
     # -- credential setters (.env writers) -----------------------------------
-    async def _set_env_value(self, update, context, *, env_key: str, label: str,
-                             pattern: re.Pattern, secret: bool, allow_empty: bool = False) -> None:
-        """Store one .env value from chat. The triggering message is deleted
-        immediately (it may contain a secret); the reply never echoes it."""
-        chat_id = update.effective_chat.id
+    # A bare command (e.g. tapped from the Telegram menu) arms a 2-minute
+    # wait: the owner's NEXT plain message is taken as the value. Messages
+    # that may contain a secret are always deleted and never echoed back.
+    async def cmd_setkey(self, update, context) -> None:
+        await self._credential_cmd(update, context, "setkey")
+
+    async def cmd_setwallet(self, update, context) -> None:
+        await self._credential_cmd(update, context, "setwallet")
+
+    async def cmd_setsub(self, update, context) -> None:
+        await self._credential_cmd(update, context, "setsub")
+
+    async def _credential_cmd(self, update, context, name: str) -> None:
+        spec = _ENV_SPECS[name]
         arg = context.args[0].strip() if context.args else ""
+        if not arg:
+            self._pending_input = (name, time.monotonic())
+            extra = "kirim 'hapus' untuk mengosongkan, atau " if spec["allow_empty"] else ""
+            await self._reply(update,
+                              f"OK — sekarang kirim {spec['label']} sebagai pesan berikutnya.\n"
+                              f"({extra}ketik 'batal' untuk membatalkan)\n"
+                              f"pesan Anda akan otomatis dihapus demi keamanan.")
+            return
+        await self._apply_env_value(update, arg, spec)
+
+    async def on_text(self, update, context) -> None:
+        """Owner plain text: consumed as the pending credential value, else a hint."""
+        text = (update.effective_message.text or "").strip()
+        pend, self._pending_input = self._pending_input, None
+        if pend and time.monotonic() - pend[1] <= PENDING_INPUT_TTL_S:
+            if text.lower() in ("batal", "cancel"):
+                await self._reply(update, "dibatalkan.")
+                return
+            await self._apply_env_value(update, text, _ENV_SPECS[pend[0]])
+            return
+        await self._reply(update, "saya hanya merespons perintah — tekan tombol Menu atau ketik /")
+
+    async def _apply_env_value(self, update, raw: str, spec: dict) -> None:
+        chat_id = update.effective_chat.id
         try:
             await update.effective_message.delete()
         except Exception as e:  # noqa: BLE001
@@ -232,51 +279,37 @@ class TgBot:
         async def say(text: str) -> None:
             await self.app.bot.send_message(chat_id=chat_id, text=text)
 
-        if not arg and allow_empty:
-            update_env_file({env_key: ""})
-            await self.db.log_event("INFO", f"{env_key} dikosongkan via telegram")
-            await say(f"{label} dikosongkan. Bot restart otomatis ±5 detik…")
+        if spec["allow_empty"] and raw.lower() in ("hapus", "kosong", "clear", ""):
+            update_env_file({spec["env_key"]: ""})
+            await self.db.log_event("INFO", f"{spec['env_key']} dikosongkan via telegram")
+            await say(f"{spec['label']} dikosongkan. Bot restart otomatis ±5 detik…")
             self.restarter()
             return
-        if not arg or not pattern.fullmatch(arg):
-            await say(f"format {label} tidak valid (pesan Anda tetap dihapus demi keamanan).\n"
-                      f"kirim ulang, contoh: /setkey 0xabc… (64 digit hex)"
-                      if secret else
-                      f"format {label} tidak valid — alamat harus 0x + 40 digit hex.")
+        if not spec["pattern"].fullmatch(raw):
+            await say(f"format {spec['label']} tidak valid (pesan Anda tetap dihapus demi keamanan).\n"
+                      f"kirim ulang: key = 64 digit hex" if spec["secret"] else
+                      f"format {spec['label']} tidak valid — harus 0x diikuti 40 digit hex.\n"
+                      f"ulangi perintahnya untuk mencoba lagi.")
             return
         extra = ""
-        if secret:
+        if spec["secret"]:
             try:
                 import eth_account
-                key = arg if arg.startswith("0x") else "0x" + arg
-                agent_addr = eth_account.Account.from_key(key).address
+                raw = raw if raw.startswith("0x") else "0x" + raw
+                agent_addr = eth_account.Account.from_key(raw).address
                 extra = (f"\nalamat agent: {agent_addr}\n"
                          f"pastikan alamat ini yang ter-authorize di Hyperliquid (More → API).")
-                arg = key
             except Exception:
                 await say("key tidak valid (gagal diverifikasi) — pesan Anda sudah dihapus.")
                 return
-        update_env_file({env_key: arg})
-        await self.db.log_event("INFO", f"{env_key} diset via telegram")
-        shown = "tersimpan (pesan berisi key sudah dihapus demi keamanan)" if secret \
-            else f"tersimpan: {arg}"
-        await say(f"✅ {label} {shown}.{extra}\n"
+        update_env_file({spec["env_key"]: raw})
+        await self.db.log_event("INFO", f"{spec['env_key']} diset via telegram")
+        shown = ("tersimpan (pesan berisi key sudah dihapus demi keamanan)" if spec["secret"]
+                 else f"tersimpan: {raw}")
+        await say(f"✅ {spec['label']} {shown}.{extra}\n"
                   f"Bot restart otomatis ±5 detik untuk memuat nilai baru — "
                   f"setelah itu cek dengan /status.")
         self.restarter()
-
-    async def cmd_setkey(self, update, context) -> None:
-        await self._set_env_value(update, context, env_key="HL_AGENT_PRIVATE_KEY",
-                                  label="API key agent", pattern=_KEY_RE, secret=True)
-
-    async def cmd_setwallet(self, update, context) -> None:
-        await self._set_env_value(update, context, env_key="HL_MAIN_WALLET_ADDRESS",
-                                  label="alamat wallet utama", pattern=_ADDR_RE, secret=False)
-
-    async def cmd_setsub(self, update, context) -> None:
-        await self._set_env_value(update, context, env_key="HL_SUBACCOUNT_ADDRESS",
-                                  label="alamat subaccount", pattern=_ADDR_RE, secret=False,
-                                  allow_empty=True)
 
     async def cmd_pnl(self, update, context) -> None:
         period = (context.args[0].lower() if context.args else "day")
