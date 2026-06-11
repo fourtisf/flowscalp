@@ -481,20 +481,54 @@ class TgBot:
         s = await self.db.summary(self.state.mode, since_ts=since)
         await self._reply(update, messages.pnl_text(period, self.state.mode, s))
 
-    async def cmd_positions(self, update, context) -> None:
+    def _position_view(self) -> Optional[str]:
+        """Current position as text, or None when flat."""
         pos = self.state.position
-        minutes = 0
-        if pos is not None and pos.ts_open:
-            minutes = int((time.time() * 1000 - pos.ts_open) / 60_000)
-        if pos is not None and self.state.pos_state in (Pos.IN_POSITION, Pos.PENDING_ENTRY):
-            text = (messages.position_text(pos, self._upnl() or 0.0, minutes)
-                    if pos.ts_open else
-                    f"order entry {pos.side.upper()} @ {messages.fmt_px(pos.entry_px)} menunggu fill")
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Tutup posisi sekarang",
-                                                             callback_data="closepos")]])
-            await update.effective_message.reply_text(text, reply_markup=kb)
+        if pos is None or self.state.pos_state not in (Pos.IN_POSITION, Pos.PENDING_ENTRY,
+                                                       Pos.EXITING):
+            return None
+        if not pos.ts_open:
+            return f"⏳ order entry {pos.side.upper()} @ {messages.fmt_px(pos.entry_px)} menunggu fill"
+        minutes = int((time.time() * 1000 - pos.ts_open) / 60_000)
+        return messages.position_text(pos, self._upnl() or 0.0, minutes)
+
+    _CLOSE_KB = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Tutup posisi sekarang",
+                                                            callback_data="closepos")]])
+
+    async def cmd_positions(self, update, context) -> None:
+        text = self._position_view()
+        if text is None:
+            await self._reply(update, messages.position_text(None, 0.0, 0))
             return
-        await self._reply(update, messages.position_text(pos, self._upnl() or 0.0, minutes))
+        msg = await update.effective_message.reply_text(
+            f"{text}\n· live, update tiap 5 detik ·", reply_markup=self._CLOSE_KB)
+        self._spawn_live_position(msg)
+
+    def _spawn_live_position(self, msg) -> None:
+        old = getattr(self, "_pos_task", None)
+        if old is not None and not old.done():
+            old.cancel()
+        self._pos_task = asyncio.create_task(self._live_position_loop(msg))
+
+    async def _live_position_loop(self, msg, interval: float = 5.0, max_loops: int = 360) -> None:
+        """Edit the /positions message in place while the position lives."""
+        last = ""
+        for _ in range(max_loops):
+            await asyncio.sleep(interval)
+            text = self._position_view()
+            if text is None:
+                try:
+                    await msg.edit_text("posisi sudah ditutup ✅ — hasil lengkap di alert & riwayat")
+                except Exception:  # noqa: BLE001 — message gone/unchanged is fine
+                    pass
+                return
+            stamped = f"{text}\n· live {time.strftime('%H:%M:%S')} ·"
+            if stamped != last:
+                last = stamped
+                try:
+                    await msg.edit_text(stamped, reply_markup=self._CLOSE_KB)
+                except Exception:  # noqa: BLE001
+                    return
 
     async def cmd_set(self, update, context) -> None:
         if len(context.args) == 0:

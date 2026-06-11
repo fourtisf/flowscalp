@@ -339,3 +339,26 @@ async def test_closepos_callback_routes_to_engine(bot):
     await bot.on_callback(upd, mk_ctx())
     assert ("closepos", {}) in bot.engine_stub.calls
     assert "ok:closepos" in st["edits"][0]
+
+
+async def test_live_position_message_updates_and_finalizes(bot):
+    from core.state import Pos, Position
+    import asyncio as _aio
+    bot.state.position = Position(side="long", entry_px=100_000.0, size_btc=0.1,
+                                  size_usd=10_000.0, sl_px=99_800.0, tp_px=100_300.0,
+                                  ts_open=1, filled_sz=0.1)
+    bot.state.pos_state = Pos.IN_POSITION
+
+    edits = []
+
+    class _Msg:
+        async def edit_text(self, t, **kw):
+            edits.append(t)
+
+    task = _aio.create_task(bot._live_position_loop(_Msg(), interval=0.01, max_loops=10))
+    await _aio.sleep(0.05)
+    assert edits and "LONG" in edits[0] and "live" in edits[0]
+    bot.state.position = None            # position closes
+    bot.state.pos_state = Pos.FLAT
+    await _aio.wait_for(task, timeout=2)
+    assert "sudah ditutup" in edits[-1]
