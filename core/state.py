@@ -62,6 +62,8 @@ class Position:
     pending_exit_reason: str = ""
     sl_cross_ts: int = 0       # engine-side backup stop bookkeeping
     tp_is_manual: bool = False # TP was pulled to mid by the eco-close button
+    entry_tx: str = ""         # on-chain proof hashes (live fills)
+    exit_tx: str = ""
 
 
 def utc_day(ts_ms: Optional[int] = None) -> str:

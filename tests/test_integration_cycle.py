@@ -301,3 +301,24 @@ async def test_live_testtrade_requires_confirmation_and_uses_minimal_size(harnes
     assert pos.size_btc == pytest.approx(0.00012, abs=1e-9)   # ceil($11/$99,990)
     assert pos.size_btc * pos.entry_px == pytest.approx(11.9988, abs=0.05)
     assert "REAL" in pos.reason
+
+
+async def test_live_fill_hash_appears_as_tx_proof(harness):
+    """Fills carrying an L1 hash (live) put an explorer link in both alerts."""
+    from core.executor import Fill
+    engine, db, feed, state, notifier, sig_bar = await harness()
+    feed.mid = 100_000.0
+    await engine._cmd_testtrade()
+    pos = state.position
+    entry_fill = Fill(oid=pos.oids["entry"], px=pos.entry_px, sz=pos.size_btc,
+                      side="B", time=1, fee_usd=0.1, kind="entry", tx_hash="0xentryhash")
+    await engine.handle_fill(entry_fill)
+    assert state.pos_state == Pos.IN_POSITION
+    assert any("explorer/tx/0xentryhash" in m for m in notifier.msgs)
+    exit_fill = Fill(oid=pos.oids["sl"], px=pos.sl_px, sz=pos.filled_sz,
+                     side="A", time=2, fee_usd=0.1, kind="sl", tx_hash="0xexithash")
+    await engine.handle_fill(exit_fill)
+    assert state.pos_state == Pos.FLAT
+    assert any("explorer/tx/0xexithash" in m for m in notifier.msgs)
+    # paper fills carry no hash → no link line
+    assert not any("explorer/tx/\n" in m for m in notifier.msgs)

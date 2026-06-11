@@ -53,6 +53,7 @@ class Fill:
     fee_usd: float
     kind: str = ""   # entry | tp | sl | flatten | taker_entry ("" for raw live fills)
     reason: str = ""
+    tx_hash: str = ""  # HyperCore L1 hash (live fills) — public proof
 
 
 class ExecError(Exception):
@@ -446,4 +447,5 @@ class LiveExecutor:
         """Normalize a userFills websocket entry."""
         return Fill(oid=str(raw["oid"]), px=float(raw["px"]), sz=float(raw["sz"]),
                     side=raw["side"], time=int(raw["time"]),
-                    fee_usd=float(raw.get("fee", 0) or 0))
+                    fee_usd=float(raw.get("fee", 0) or 0),
+                    tx_hash=str(raw.get("hash", "") or ""))

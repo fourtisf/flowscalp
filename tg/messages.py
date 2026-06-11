@@ -7,6 +7,14 @@ from __future__ import annotations
 from typing import Optional
 
 
+HL_EXPLORER_TX = "https://app.hyperliquid.xyz/explorer/tx/"
+
+
+def tx_proof(tx_hash: str) -> str:
+    """One-line on-chain proof link for live fills ('' when none, e.g. paper)."""
+    return f"\n🔗 bukti tx: {HL_EXPLORER_TX}{tx_hash}" if tx_hash else ""
+
+
 def fmt_px(x: float) -> str:
     return f"{x:,.0f}"
 
@@ -31,7 +39,7 @@ def entry_block(pos, mode: str, risk_pct: float, partial: bool = False) -> str:
     return (f"{e} {pos.side.upper()} BTC  ({tag})\n"
             f"entry {fmt_px(pos.entry_px)} | sl {fmt_px(pos.sl_px)} ({sl_pct:+.2f}%)"
             f" | tp {fmt_px(pos.tp_px)} ({tp_r:.1f}R)\n"
-            f"size {pos.size_btc:.4f} BTC ({fmt_usd(pos.size_usd)}) | risk {risk_pct:.2f}% eq\n"
+            f"size {pos.size_btc:.5f} BTC ({fmt_usd(pos.size_usd)}) | risk {risk_pct:.2f}% eq\n"
             f"reason: {pos.reason}")
 
 
@@ -94,7 +102,7 @@ def pnl_text(period: str, mode: str, s: dict) -> str:
 def position_text(pos, upnl: float, minutes: int) -> str:
     if pos is None or not pos.ts_open:
         return "no open position"
-    return (f"{pos.side.upper()} {pos.filled_sz:.4f} BTC @ {fmt_px(pos.entry_px)}\n"
+    return (f"{pos.side.upper()} {pos.filled_sz:.5f} BTC @ {fmt_px(pos.entry_px)}\n"
             f"sl {fmt_px(pos.sl_px)} | tp {fmt_px(pos.tp_px)}"
             f" | uPnL {fmt_usd(upnl, signed=True)} | {minutes}m in trade")
 
