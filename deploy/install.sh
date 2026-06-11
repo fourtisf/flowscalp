@@ -9,7 +9,27 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "[1/7] apt dependencies"
 apt-get update -qq
-apt-get install -y -qq python3.11 python3.11-venv sqlite3
+apt-get install -y -qq sqlite3 rsync
+
+# find a Python >= 3.11 (Ubuntu 24.04 ships 3.12, Debian 12 ships 3.11, …)
+PY=""
+for cand in python3 python3.12 python3.11; do
+  command -v "$cand" >/dev/null 2>&1 || continue
+  if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    PY=$cand; break
+  fi
+done
+if [ -z "$PY" ]; then
+  # older distros (Ubuntu 22.04): python3.11 lives in universe
+  apt-get install -y -qq python3.11 python3.11-venv && PY=python3.11 || true
+fi
+if [ -z "$PY" ]; then
+  echo "ERROR: no Python >= 3.11 available. Install one and re-run." >&2
+  exit 1
+fi
+PYVER=$("$PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+apt-get install -y -qq "python${PYVER}-venv" || apt-get install -y -qq python3-venv
+echo "    using $PY (Python $PYVER)"
 
 echo "[2/7] user + directories"
 id -u $APP_USER &>/dev/null || useradd --system --home $APP_DIR --shell /usr/sbin/nologin $APP_USER
@@ -22,7 +42,7 @@ rsync -a --delete \
   "$REPO_DIR/" $APP_DIR/
 
 echo "[4/7] venv + python deps"
-[ -d $APP_DIR/venv ] || python3.11 -m venv $APP_DIR/venv
+[ -d $APP_DIR/venv ] || "$PY" -m venv $APP_DIR/venv
 $APP_DIR/venv/bin/pip install -q --upgrade pip
 $APP_DIR/venv/bin/pip install -q -r $APP_DIR/requirements.txt
 
