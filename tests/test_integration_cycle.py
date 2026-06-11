@@ -241,8 +241,9 @@ async def test_testtrade_injects_full_cycle(harness):
     assert "tidak bisa" in res2                       # one position at a time
     await engine._cmd_stop()                          # close it out
     assert (await db.recent_trades("paper", 1))[0]["exit_reason"] == "kill"
+    await engine._cmd_resume()
     state.mode = "live"
-    assert "hanya tersedia di mode paper" in await engine._cmd_testtrade()
+    assert "butuh konfirmasi" in await engine._cmd_testtrade()
 
 
 async def test_manual_close_button_path(harness):
