@@ -143,3 +143,82 @@ async def test_status_and_pnl_render(bot):
     upd3, replies3 = mk_update(OWNER)
     await bot.cmd_pnl(upd3, mk_ctx("fortnight"))
     assert "cara pakai" in replies3[0]
+
+
+def mk_update_chat(uid, text=""):
+    """Update stub with effective_chat + deletable message (for /setkey etc.)."""
+    state = {"deleted": False, "sent": []}
+
+    async def delete():
+        state["deleted"] = True
+
+    msg = SimpleNamespace(text=text, delete=delete)
+    upd = SimpleNamespace(effective_user=SimpleNamespace(id=uid),
+                          effective_message=msg,
+                          effective_chat=SimpleNamespace(id=uid))
+    return upd, state
+
+
+class _FakeBotApp:
+    def __init__(self, sink):
+        self.bot = SimpleNamespace(send_message=self._send)
+        self._sink = sink
+
+    async def _send(self, chat_id=None, text=None):
+        self._sink.append(text)
+
+
+async def test_setkey_deletes_message_writes_env_and_restarts(bot, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sent = []
+    bot.app = _FakeBotApp(sent)
+    restarts = []
+    bot.restarter = lambda: restarts.append(1)
+
+    key = "ab" * 32  # valid 64-hex (no 0x prefix → bot normalizes)
+    upd, st = mk_update_chat(OWNER, f"/setkey {key}")
+    await bot.cmd_setkey(upd, mk_ctx(key))
+    assert st["deleted"], "message containing the key must be deleted"
+    assert restarts == [1]
+    env = (tmp_path / ".env").read_text()
+    assert f"HL_AGENT_PRIVATE_KEY=0x{key}" in env
+    assert key not in " ".join(sent)          # never echo the key back
+    assert any("alamat agent: 0x" in t for t in sent)
+    import os as _os
+    assert (_os.stat(tmp_path / ".env").st_mode & 0o777) == 0o600
+
+
+async def test_setkey_rejects_garbage_but_still_deletes(bot, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sent = []
+    bot.app = _FakeBotApp(sent)
+    bot.restarter = lambda: (_ for _ in ()).throw(AssertionError("no restart on reject"))
+    upd, st = mk_update_chat(OWNER, "/setkey bukan-key")
+    await bot.cmd_setkey(upd, mk_ctx("bukan-key"))
+    assert st["deleted"]
+    assert any("tidak valid" in t for t in sent)
+    assert not (tmp_path / ".env").exists()
+
+
+async def test_setwallet_and_setsub_roundtrip(bot, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sent = []
+    bot.app = _FakeBotApp(sent)
+    restarts = []
+    bot.restarter = lambda: restarts.append(1)
+    addr = "0x" + "a1" * 20
+    upd, _ = mk_update_chat(OWNER)
+    await bot.cmd_setwallet(upd, mk_ctx(addr))
+    upd2, _ = mk_update_chat(OWNER)
+    await bot.cmd_setsub(upd2, mk_ctx())      # empty = clear subaccount
+    env = (tmp_path / ".env").read_text()
+    assert f"HL_MAIN_WALLET_ADDRESS={addr}" in env
+    assert "HL_SUBACCOUNT_ADDRESS=\n" in env or env.endswith("HL_SUBACCOUNT_ADDRESS=")
+    assert len(restarts) == 2
+
+
+async def test_profile_renders(bot):
+    upd, replies = mk_update(OWNER)
+    await bot.cmd_profile(upd, mk_ctx())
+    assert "PROFIL" in replies[0] and "saldo: $10,000.00" in replies[0]
+    assert "hari ini" in replies[0] and "total" in replies[0]

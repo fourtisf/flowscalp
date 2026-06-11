@@ -99,6 +99,24 @@ def position_text(pos, upnl: float, minutes: int) -> str:
             f" | uPnL {fmt_usd(upnl, signed=True)} | {minutes}m in trade")
 
 
+def profile_text(st, equity: float, day: dict, week: dict, alls: dict) -> str:
+    day_pct = (st.day_realized_pnl / st.day_start_equity * 100) if st.day_start_equity else 0.0
+    pf = alls.get("profit_factor")
+    return (f"👤 PROFIL — mode {st.mode}, state {st.bot_state.value}\n"
+            f"💰 saldo: {fmt_usd(equity)}\n"
+            f"\n"
+            f"📅 hari ini: {fmt_usd(st.day_realized_pnl, signed=True)} ({day_pct:+.2f}%)"
+            f" | {day['trades']} trade | win {day['win_rate'] * 100:.0f}%"
+            f" | {st.day_realized_r:+.1f}R\n"
+            f"🗓 7 hari: {fmt_usd(week['pnl_usd'], signed=True)} | {week['trades']} trade"
+            f" | win {week['win_rate'] * 100:.0f}% | {week['net_r']:+.1f}R\n"
+            f"📈 total: {fmt_usd(alls['pnl_usd'], signed=True)} | {alls['trades']} trade"
+            f" | win {alls['win_rate'] * 100:.0f}%"
+            f" | PF {'—' if pf is None else f'{pf:.2f}'}\n"
+            f"💸 total fee: {fmt_usd(alls['fees_usd'])}"
+            f" | 🔻 kalah beruntun: {st.consec_losses}")
+
+
 def settings_text(settings) -> str:
     from config import RANGES
     rows = []

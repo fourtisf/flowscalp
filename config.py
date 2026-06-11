@@ -198,6 +198,31 @@ def validate_setting(key: str, raw: Any) -> tuple[bool, Any]:
     return False, f"{key}: unsupported type"  # pragma: no cover
 
 
+def update_env_file(values: dict[str, str], path: str = ".env") -> None:
+    """Atomically upsert KEY=VALUE lines in the .env file, keeping 600 perms."""
+    lines: list[str] = []
+    if os.path.exists(path):
+        with open(path) as f:
+            lines = f.read().splitlines()
+    seen: set[str] = set()
+    out: list[str] = []
+    for ln in lines:
+        key = ln.split("=", 1)[0].strip() if ("=" in ln and not ln.lstrip().startswith("#")) else None
+        if key in values:
+            out.append(f"{key}={values[key]}")
+            seen.add(key)
+        else:
+            out.append(ln)
+    for k, v in values.items():
+        if k not in seen:
+            out.append(f"{k}={v}")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(out) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
 class SettingsStore:
     """DB-backed runtime settings with an in-memory cache."""
 
