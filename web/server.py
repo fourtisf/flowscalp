@@ -15,6 +15,8 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 
+from core import timewin
+
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 RANGES_MS = {"1d": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000}
@@ -61,7 +63,29 @@ def create_app(env, db, state, feed, store, engine) -> FastAPI:
             "mid": feed.mid,
             "streak": state.consec_losses,
             "uptime_min": max(0, (now_ms() - state.boot_ts) // 60_000),
+            **(await _strategy_status()),
             "updated_at": now_ms() // 1000,
+        }
+
+    async def _strategy_status() -> dict:
+        """Live answers to 'why no trade yet': session gate, CVD warm-up,
+        and the most recent filtered-out signal."""
+        s = store.current
+        minute = timewin.minute_of_day_utc(now_ms())
+        in_session = not s.session_windows or timewin.in_any_window(minute, s.session_windows)
+        in_blackout = bool(s.blackout_windows) and timewin.in_any_window(minute, s.blackout_windows)
+        deltas = list(getattr(feed, "deltas_1m", []) or [])
+        need = s.sweep_lookback + 24
+        cvd_ready = (not s.cvd_filter) or (
+            len(deltas) >= need and all(d is not None for d in deltas[-need:]))
+        row = await db.fetchone(
+            "SELECT ts, msg FROM events WHERE msg LIKE 'gate skip%' OR msg LIKE 'entry blocked%'"
+            " ORDER BY ts DESC LIMIT 1")
+        return {
+            "session_open": in_session and not in_blackout,
+            "session_windows": list(s.session_windows),
+            "cvd_ready": cvd_ready,
+            "last_skip": {"ts": row["ts"], "msg": row["msg"]} if row else None,
         }
 
     @app.get("/api/summary", dependencies=[Depends(auth)])
