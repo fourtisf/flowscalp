@@ -315,10 +315,15 @@ async def test_live_fill_hash_appears_as_tx_proof(harness):
     await engine.handle_fill(entry_fill)
     assert state.pos_state == Pos.IN_POSITION
     assert any("explorer/tx/0xentryhash" in m for m in notifier.msgs)
+    # maker fill (crossed=False) → counterparty caveat present
+    assert any("explorer/tx/0xentryhash" in m and "LAWAN" in m for m in notifier.msgs)
     exit_fill = Fill(oid=pos.oids["sl"], px=pos.sl_px, sz=pos.filled_sz,
-                     side="A", time=2, fee_usd=0.1, kind="sl", tx_hash="0xexithash")
+                     side="A", time=2, fee_usd=0.1, kind="sl", tx_hash="0xexithash",
+                     crossed=True)
     await engine.handle_fill(exit_fill)
     assert state.pos_state == Pos.FLAT
-    assert any("explorer/tx/0xexithash" in m for m in notifier.msgs)
+    # taker fill (our own action hash) → clean link, no caveat
+    exit_msg = next(m for m in notifier.msgs if "explorer/tx/0xexithash" in m)
+    assert "LAWAN" not in exit_msg
     # paper fills carry no hash → no link line
     assert not any("explorer/tx/\n" in m for m in notifier.msgs)

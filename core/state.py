@@ -64,6 +64,8 @@ class Position:
     tp_is_manual: bool = False # TP was pulled to mid by the eco-close button
     entry_tx: str = ""         # on-chain proof hashes (live fills)
     exit_tx: str = ""
+    entry_tx_crossed: bool = False  # our order was the taker in that tx
+    exit_tx_crossed: bool = False
 
 
 def utc_day(ts_ms: Optional[int] = None) -> str:

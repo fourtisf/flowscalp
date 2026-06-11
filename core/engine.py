@@ -445,6 +445,7 @@ class Engine:
         pos.fees_usd += f.fee_usd
         if f.tx_hash:
             pos.entry_tx = f.tx_hash
+            pos.entry_tx_crossed = f.crossed
         if pos.filled_sz + self._sz_eps >= pos.size_btc:
             await self._complete_entry(f.time)
 
@@ -463,7 +464,8 @@ class Engine:
         await self.executor.arm_exits(pos)
         st.set_pos_state(Pos.IN_POSITION)
         await self._notify(messages.entry_block(pos, st.mode, s.risk_pct, partial=partial)
-                           + messages.tx_proof(pos.entry_tx))
+                           + messages.tx_proof(pos.entry_tx, pos.entry_tx_crossed,
+                                               self.env.trading_address))
 
     async def _on_exit_fill(self, f: Fill) -> None:
         st, pos = self.state, self.state.position
@@ -473,6 +475,7 @@ class Engine:
         pos.fees_usd += f.fee_usd
         if f.tx_hash:
             pos.exit_tx = f.tx_hash
+            pos.exit_tx_crossed = f.crossed
         # explicit fill kind/reason wins; oid matching is the fallback for raw
         # live fills (an oid collision must never relabel a manual close)
         if f.kind == "sl" or (f.kind == "" and f.oid == pos.oids.get("sl")):
@@ -520,7 +523,8 @@ class Engine:
         await self.db.snapshot_equity(st.mode, equity, ts)
         await self._notify(messages.exit_block(pos.side, r, pnl, pos.entry_px, pos.exit_px,
                                                minutes, reason, st.day_realized_r, equity)
-                           + messages.tx_proof(pos.exit_tx))
+                           + messages.tx_proof(pos.exit_tx, pos.exit_tx_crossed,
+                                               self.env.trading_address))
         await self._circuit_breakers(s, equity)
 
     async def _circuit_breakers(self, s: Settings, equity: float) -> None:

@@ -8,11 +8,23 @@ from typing import Optional
 
 
 HL_EXPLORER_TX = "https://app.hyperliquid.xyz/explorer/tx/"
+HYPURRSCAN = "https://hypurrscan.io/address/"
 
 
-def tx_proof(tx_hash: str) -> str:
-    """One-line on-chain proof link for live fills ('' when none, e.g. paper)."""
-    return f"\n🔗 bukti tx: {HL_EXPLORER_TX}{tx_hash}" if tx_hash else ""
+def tx_proof(tx_hash: str, crossed: bool = False, address: str = "") -> str:
+    """On-chain proof lines for live fills ('' when none, e.g. paper).
+
+    For MAKER fills the tx hash belongs to the counterparty's aggressive
+    order, so the explorer page shows the OPPOSITE side — flag that, and
+    always link the account's own public history as the primary proof."""
+    if not tx_hash:
+        return ""
+    out = f"\n🔗 bukti tx: {HL_EXPLORER_TX}{tx_hash}"
+    if not crossed:
+        out += "\n   (order kita maker — halaman tx itu menampilkan aksi pihak LAWAN, side-nya tampak terbalik)"
+    if address:
+        out += f"\n📒 riwayat akun: {HYPURRSCAN}{address}"
+    return out
 
 
 def fmt_px(x: float) -> str:
