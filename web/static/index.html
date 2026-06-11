@@ -5,104 +5,132 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlowScalp · Live PnL</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <style>
   :root{
-    --bg:#080b10; --card:#0f141c; --card2:#121a24; --line:#1b2533;
-    --text:#dde6f0; --dim:#5f6f87; --label:#8494ab;
-    --green:#2ee6a6; --red:#ff5d6c; --amber:#ffb02e; --teal:#19b394;
+    --bg:#07090d; --text:#e3ebf5; --dim:#5d6c84; --label:#94a3bb;
+    --green:#2ee6a6; --red:#ff5d6c; --amber:#ffb02e; --teal:#19c39c; --indigo:#5b76ff;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  html,body{height:100%}
-  body{background:
-        radial-gradient(1200px 500px at 70% -10%, rgba(46,230,166,.05), transparent 60%),
-        var(--bg);
-       color:var(--text);font-family:Inter,system-ui,sans-serif;font-size:14px;line-height:1.45}
+  html{scrollbar-color:#1b2533 transparent}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#1b2533;border-radius:8px}
+  ::-webkit-scrollbar-track{background:transparent}
+  body{
+    background:
+      radial-gradient(1000px 520px at 88% -8%, rgba(46,230,166,.075), transparent 58%),
+      radial-gradient(900px 620px at -12% 112%, rgba(91,118,255,.07), transparent 55%),
+      var(--bg);
+    color:var(--text);font-family:Inter,system-ui,sans-serif;font-size:14px;line-height:1.5;
+    min-height:100vh}
   .mono{font-family:'JetBrains Mono',monospace}
-  a{color:var(--teal)}
+
+  .glass{
+    border:1px solid transparent;border-radius:20px;
+    background:
+      linear-gradient(165deg,#0e1520,#0b1119) padding-box,
+      linear-gradient(150deg, rgba(46,230,166,.28), rgba(255,255,255,.05) 38%, rgba(91,118,255,.16)) border-box;
+    box-shadow:0 22px 50px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.035)}
 
   /* ---------- token gate ---------- */
-  #gate{display:flex;min-height:100vh;align-items:center;justify-content:center;flex-direction:column;gap:18px;padding:20px}
-  .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px;letter-spacing:.02em}
-  .logo .dot{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
-             background:linear-gradient(135deg,#16323a,#0d1f26);border:1px solid #1f4a44;color:var(--green);font-size:17px}
-  #gate .panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px;width:min(380px,92vw);
-               box-shadow:0 24px 60px rgba(0,0,0,.45)}
-  #gate label{display:block;color:var(--label);font-size:11px;text-transform:uppercase;letter-spacing:.14em;margin-bottom:10px}
-  #gate input{width:100%;background:#0a0f15;border:1px solid var(--line);border-radius:10px;color:var(--text);
-              padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;outline:none}
-  #gate input:focus{border-color:var(--teal)}
-  #gate button{width:100%;margin-top:12px;background:linear-gradient(135deg,#1ec896,#0fa37c);color:#04201a;font-weight:700;
-               border:0;border-radius:10px;padding:12px;font-size:14px;cursor:pointer}
-  #gate .err{color:var(--red);font-size:12px;min-height:16px;margin-top:10px}
+  #gate{display:flex;min-height:100vh;align-items:center;justify-content:center;flex-direction:column;gap:22px;padding:20px}
+  .logo{display:flex;align-items:center;gap:12px;font-weight:800;font-size:21px;letter-spacing:.01em}
+  .logo .mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:18px;color:#062019;
+              background:linear-gradient(135deg,#2ee6a6,#0fa37c);
+              box-shadow:0 0 24px rgba(46,230,166,.35), inset 0 1px 0 rgba(255,255,255,.35)}
+  #gate .panel{padding:30px;width:min(390px,92vw)}
+  #gate label{display:block;color:var(--label);font-size:11px;text-transform:uppercase;letter-spacing:.16em;margin-bottom:12px}
+  #gate input{width:100%;background:#080d13;border:1px solid #1b2533;border-radius:12px;color:var(--text);
+              padding:13px 15px;font-family:'JetBrains Mono',monospace;font-size:13px;outline:none;transition:border-color .15s}
+  #gate input:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(25,195,156,.12)}
+  #gate button{width:100%;margin-top:14px;background:linear-gradient(135deg,#2ee6a6,#0fa37c);color:#04201a;font-weight:800;
+               border:0;border-radius:12px;padding:13px;font-size:14px;cursor:pointer;letter-spacing:.02em;
+               box-shadow:0 10px 26px rgba(20,170,130,.25);transition:transform .12s}
+  #gate button:hover{transform:translateY(-1px)}
+  #gate .err{color:var(--red);font-size:12px;min-height:16px;margin-top:12px}
 
-  /* ---------- app shell ---------- */
-  #app{display:none;max-width:1280px;margin:0 auto;padding:0 22px 48px}
-  header{display:flex;align-items:center;gap:14px;padding:18px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  .pill{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:.08em;
-        padding:5px 11px;border-radius:999px;border:1px solid transparent}
-  .pill.paper{color:var(--amber);background:rgba(255,176,46,.08);border-color:rgba(255,176,46,.35)}
-  .pill.live{color:var(--red);background:rgba(255,93,108,.08);border-color:rgba(255,93,108,.4)}
-  .pill.state{color:var(--green);background:rgba(46,230,166,.07);border-color:rgba(46,230,166,.3)}
-  .pill.state.bad{color:var(--red);background:rgba(255,93,108,.08);border-color:rgba(255,93,108,.4)}
-  .pill.state.warn{color:var(--amber);background:rgba(255,176,46,.08);border-color:rgba(255,176,46,.35)}
-  header .right{margin-left:auto;display:flex;align-items:center;gap:16px;color:var(--dim);font-size:12px}
-  header .right .mono{color:var(--label)}
+  /* ---------- shell ---------- */
+  #app{display:none;max-width:1240px;margin:0 auto;padding:0 22px 56px}
+  header{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+         padding:15px 0;margin:0 -22px;padding-left:22px;padding-right:22px;
+         background:rgba(7,9,13,.72);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+         border-bottom:1px solid rgba(255,255,255,.05)}
+  .pill{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:.09em;
+        padding:6px 13px;border-radius:999px;display:inline-flex;align-items:center;gap:7px}
+  .pill.paper{color:var(--amber);background:rgba(255,176,46,.09);border:1px solid rgba(255,176,46,.32)}
+  .pill.live{color:#ff8d98;background:rgba(255,93,108,.10);border:1px solid rgba(255,93,108,.4)}
+  .pill.state{color:var(--green);background:rgba(46,230,166,.07);border:1px solid rgba(46,230,166,.28)}
+  .pill.state.bad{color:#ff8d98;background:rgba(255,93,108,.10);border-color:rgba(255,93,108,.4)}
+  .pill.state.warn{color:var(--amber);background:rgba(255,176,46,.09);border-color:rgba(255,176,46,.32)}
+  .dotlive{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 0 0 rgba(46,230,166,.45)}
+  @media(prefers-reduced-motion:no-preference){.dotlive{animation:pulse 2.2s infinite}}
+  @keyframes pulse{70%{box-shadow:0 0 0 9px rgba(46,230,166,0)}100%{box-shadow:0 0 0 0 rgba(46,230,166,0)}}
+  header .right{margin-left:auto;display:flex;align-items:center;gap:18px;color:var(--dim);font-size:12.5px}
+  header .right b{color:var(--label);font-weight:600}
 
   /* ---------- hero ---------- */
-  .hero{display:grid;grid-template-columns:330px 1fr;gap:22px;padding:26px 0 8px;align-items:stretch}
-  @media(max-width:900px){.hero{grid-template-columns:1fr}}
-  .eqcard{background:linear-gradient(160deg,var(--card2),var(--card));border:1px solid var(--line);
-          border-radius:18px;padding:22px;display:flex;flex-direction:column;justify-content:center;gap:8px}
-  .eqcard .cap{color:var(--label);font-size:11px;text-transform:uppercase;letter-spacing:.16em}
-  #equity{font-family:'JetBrains Mono',monospace;font-size:42px;font-weight:800;letter-spacing:-1px}
-  .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
-  .chip{font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;padding:6px 12px;border-radius:10px;
-        background:#0a0f15;border:1px solid var(--line)}
-  .chip span{color:var(--label);font-weight:500;margin-right:6px;font-size:11px}
-  .chartcard{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px 18px 10px;position:relative}
-  .chartcard .cap{color:var(--label);font-size:11px;text-transform:uppercase;letter-spacing:.16em;margin-bottom:8px}
-  .chartwrap{position:relative;height:170px}
+  .hero{display:grid;grid-template-columns:340px 1fr;gap:18px;padding:26px 0 4px;align-items:stretch}
+  @media(max-width:920px){.hero{grid-template-columns:1fr}}
+  .eq{padding:26px;display:flex;flex-direction:column;justify-content:center;gap:10px;position:relative;overflow:hidden}
+  .eq::after{content:"";position:absolute;right:-70px;top:-70px;width:200px;height:200px;border-radius:50%;
+             background:radial-gradient(circle, rgba(46,230,166,.14), transparent 65%)}
+  .cap{color:var(--label);font-size:11px;text-transform:uppercase;letter-spacing:.18em;font-weight:600}
+  #equity{font-family:'JetBrains Mono',monospace;font-size:44px;font-weight:800;letter-spacing:-1.5px;
+          background:linear-gradient(100deg,#ffffff 30%,#9fe8cf);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
+  .chip{font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:700;padding:7px 13px;border-radius:11px;
+        background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07)}
+  .chip span{color:var(--dim);font-weight:500;margin-right:7px;font-size:11px;font-family:Inter}
+  .chartcard{padding:20px 20px 12px;display:flex;flex-direction:column}
+  .chartcard .cap{margin-bottom:10px}
+  .chartwrap{position:relative;flex:1;min-height:180px}
   .chartwrap canvas{position:absolute;inset:0}
 
-  /* ---------- stat tiles ---------- */
-  .tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-top:18px}
+  /* ---------- tiles ---------- */
+  .tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:13px;margin-top:18px}
   @media(max-width:1000px){.tiles{grid-template-columns:repeat(3,1fr)}}
   @media(max-width:560px){.tiles{grid-template-columns:repeat(2,1fr)}}
-  .tile{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
-  .tile .k{color:var(--label);font-size:10.5px;text-transform:uppercase;letter-spacing:.12em}
-  .tile .v{font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;margin-top:6px}
+  .tile{position:relative;border-radius:16px;padding:16px 17px 14px;background:#0d131c;border:1px solid #161f2c;
+        transition:transform .15s, border-color .15s;overflow:hidden}
+  .tile:hover{transform:translateY(-2px);border-color:#23334a}
+  .tile::before{content:"";position:absolute;left:0;top:0;height:2.5px;width:46%;border-radius:0 4px 4px 0;
+                background:linear-gradient(90deg,var(--ac,#2ee6a6),transparent)}
+  .tile .k{color:var(--label);font-size:10.5px;text-transform:uppercase;letter-spacing:.13em;font-weight:600}
+  .tile .v{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:800;margin-top:8px}
 
-  /* ---------- two columns ---------- */
+  /* ---------- columns ---------- */
   .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
   @media(max-width:900px){.cols{grid-template-columns:1fr}}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
-  .card h3{font-size:11px;color:var(--label);text-transform:uppercase;letter-spacing:.16em;font-weight:600;margin-bottom:12px}
-  .kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #161f2b;font-size:13.5px}
+  .card{padding:20px}
+  .card h3{font-size:11px;color:var(--label);text-transform:uppercase;letter-spacing:.18em;font-weight:700;margin-bottom:14px;
+           display:flex;align-items:center;gap:8px}
+  .card h3::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,#1b2533,transparent)}
+  .kv{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px dashed rgba(255,255,255,.05);font-size:13.5px}
   .kv:last-child{border-bottom:0}
   .kv .k{color:var(--dim)}
-  .kv .v{font-family:'JetBrains Mono',monospace;font-weight:600}
+  .kv .v{font-family:'JetBrains Mono',monospace;font-weight:700}
+  .emptybox{border:1.5px dashed #1d2a3b;border-radius:14px;padding:30px 16px;text-align:center;color:var(--dim);font-size:13px}
+  .emptybox .ico{font-size:22px;opacity:.6;display:block;margin-bottom:8px}
 
-  /* ---------- trades table ---------- */
-  .tablecard{margin-top:14px}
+  /* ---------- table ---------- */
+  .tablecard{margin-top:14px;padding:20px}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{color:var(--dim);font-weight:500;text-align:right;padding:9px 10px;border-bottom:1px solid var(--line);
-     font-size:10.5px;text-transform:uppercase;letter-spacing:.12em;white-space:nowrap}
-  td{padding:9px 10px;text-align:right;border-bottom:1px solid #131c28;white-space:nowrap;
-     font-family:'JetBrains Mono',monospace;font-size:12.5px}
-  tr:hover td{background:#101823}
+  th{color:var(--dim);font-weight:600;text-align:right;padding:10px 11px;border-bottom:1px solid #182230;
+     font-size:10.5px;text-transform:uppercase;letter-spacing:.13em;white-space:nowrap}
+  td{padding:10px 11px;text-align:right;border-bottom:1px solid rgba(255,255,255,.035);white-space:nowrap;
+     font-family:'JetBrains Mono',monospace;font-size:12.5px;transition:background .12s}
+  tr:hover td{background:rgba(255,255,255,.025)}
   th:first-child,td:first-child{text-align:left}
-  .side{font-weight:700;font-size:11px;padding:3px 9px;border-radius:7px}
-  .side.long{color:var(--green);background:rgba(46,230,166,.08)}
-  .side.short{color:var(--red);background:rgba(255,93,108,.08)}
-  .rsn{font-size:10.5px;color:var(--label);background:#0a0f15;border:1px solid var(--line);
-       padding:3px 8px;border-radius:7px;text-transform:uppercase;letter-spacing:.06em}
-  .pos{color:var(--green)} .neg{color:var(--red)} .mut{color:var(--dim)}
-  .empty{color:var(--dim);text-align:center;padding:26px 0;font-size:13px}
-  footer{color:#3c485c;font-size:11.5px;text-align:center;margin-top:26px}
+  .side{font-weight:800;font-size:10.5px;padding:4px 10px;border-radius:8px;letter-spacing:.06em}
+  .side.long{color:var(--green);background:rgba(46,230,166,.09);border:1px solid rgba(46,230,166,.25)}
+  .side.short{color:#ff8d98;background:rgba(255,93,108,.09);border:1px solid rgba(255,93,108,.3)}
+  .rsn{font-size:10px;color:var(--label);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
+       padding:4px 9px;border-radius:8px;text-transform:uppercase;letter-spacing:.08em;font-family:Inter;font-weight:600}
+  .pos{color:var(--green)} .neg{color:#ff8d98} .mut{color:var(--dim)}
+  footer{color:#36425a;font-size:11.5px;text-align:center;margin-top:30px}
   @media(prefers-reduced-motion:no-preference){
-    .flash{animation:flash .35s ease}
+    .flash{animation:flash .4s ease}
     @keyframes flash{0%{color:var(--amber)}100%{}}
   }
 </style>
@@ -110,68 +138,69 @@
 <body>
 
 <div id="gate">
-  <div class="logo"><div class="dot">⚡</div>FlowScalp</div>
-  <div class="panel">
+  <div class="logo"><div class="mark">⚡</div>FlowScalp</div>
+  <div class="panel glass">
     <label>akses dasbor — masukkan token</label>
     <input id="tok" type="password" placeholder="DASH_BEARER_TOKEN" autocomplete="off">
-    <button id="enter">Masuk</button>
+    <button id="enter">Masuk →</button>
     <div class="err" id="gateerr"></div>
   </div>
 </div>
 
 <div id="app">
   <header>
-    <div class="logo"><div class="dot">⚡</div>FlowScalp</div>
+    <div class="logo"><div class="mark">⚡</div>FlowScalp</div>
     <span id="modebadge" class="pill paper">PAPER</span>
-    <span id="statebadge" class="pill state">RUNNING</span>
+    <span id="statebadge" class="pill state"><span class="dotlive"></span><span id="statetext">RUNNING</span></span>
     <div class="right">
-      <span>BTC <span class="mono" id="mid">—</span></span>
+      <span>BTC <b class="mono" id="mid">—</b></span>
       <span id="uptime">—</span>
-      <span id="clock" class="mono"></span>
+      <b class="mono" id="clock"></b>
     </div>
   </header>
 
   <section class="hero">
-    <div class="eqcard">
+    <div class="eq glass">
       <div class="cap">total equity</div>
       <div id="equity">—</div>
       <div class="chips">
         <span class="chip"><span>hari ini</span><b id="daypnl">—</b></span>
-        <span class="chip"><span>R</span><b id="dayr">—</b></span>
+        <span class="chip"><span>net R</span><b id="dayr">—</b></span>
+        <span class="chip"><span>trade</span><b id="pdt">0</b></span>
       </div>
     </div>
-    <div class="chartcard">
+    <div class="chartcard glass">
       <div class="cap">kurva equity · 24 jam</div>
       <div class="chartwrap"><canvas id="spark"></canvas></div>
     </div>
   </section>
 
   <section class="tiles">
-    <div class="tile"><div class="k">total trade</div><div class="v" id="s_trades">—</div></div>
-    <div class="tile"><div class="k">win rate</div><div class="v" id="s_wr">—</div></div>
-    <div class="tile"><div class="k">net R</div><div class="v" id="s_netr">—</div></div>
-    <div class="tile"><div class="k">profit factor</div><div class="v" id="s_pf">—</div></div>
-    <div class="tile"><div class="k">max drawdown</div><div class="v" id="s_dd">—</div></div>
-    <div class="tile"><div class="k">total fee</div><div class="v" id="s_fees">—</div></div>
+    <div class="tile" style="--ac:#5b76ff"><div class="k">total trade</div><div class="v" id="s_trades">—</div></div>
+    <div class="tile" style="--ac:#2ee6a6"><div class="k">win rate</div><div class="v" id="s_wr">—</div></div>
+    <div class="tile" style="--ac:#2ee6a6"><div class="k">net R</div><div class="v" id="s_netr">—</div></div>
+    <div class="tile" style="--ac:#ffb02e"><div class="k">profit factor</div><div class="v" id="s_pf">—</div></div>
+    <div class="tile" style="--ac:#ff5d6c"><div class="k">max drawdown</div><div class="v" id="s_dd">—</div></div>
+    <div class="tile" style="--ac:#94a3bb"><div class="k">total fee</div><div class="v" id="s_fees">—</div></div>
   </section>
 
   <section class="cols">
-    <div class="card">
+    <div class="card glass">
       <h3>posisi terbuka</h3>
-      <div id="poscard"><div class="empty">flat — menunggu sinyal</div></div>
+      <div id="poscard"><div class="emptybox"><span class="ico">📡</span>flat — bot sedang menunggu setup yang lolos semua filter</div></div>
     </div>
-    <div class="card">
+    <div class="card glass">
       <h3>performa</h3>
       <div class="kv"><span class="k">7 hari · PnL</span><span class="v" id="p7">—</span></div>
       <div class="kv"><span class="k">7 hari · trade / win</span><span class="v" id="p7t">—</span></div>
       <div class="kv"><span class="k">30 hari · PnL</span><span class="v" id="p30">—</span></div>
       <div class="kv"><span class="k">30 hari · trade / win</span><span class="v" id="p30t">—</span></div>
-      <div class="kv"><span class="k">hari ini · trade</span><span class="v" id="pdt">—</span></div>
+      <div class="kv"><span class="k">streak kalah saat ini</span><span class="v" id="pstreak">—</span></div>
     </div>
   </section>
 
-  <section class="card tablecard">
-    <h3>riwayat trade — 50 terakhir</h3>
+  <section class="glass tablecard">
+    <h3 style="font-size:11px;color:var(--label);text-transform:uppercase;letter-spacing:.18em;font-weight:700;margin-bottom:14px">riwayat trade — 50 terakhir</h3>
     <div style="overflow-x:auto">
       <table>
         <thead><tr>
@@ -180,11 +209,11 @@
         </tr></thead>
         <tbody id="trades"></tbody>
       </table>
-      <div class="empty" id="noTrades" style="display:none">belum ada trade — laporan pertama akan muncul di sini dan di Telegram</div>
+      <div class="emptybox" id="noTrades" style="display:none;margin-top:10px"><span class="ico">🕐</span>belum ada trade — laporan pertama akan muncul di sini dan di Telegram</div>
     </div>
   </section>
 
-  <footer>FlowScalp · BTC-PERP Hyperliquid · refresh otomatis 5 detik</footer>
+  <footer>FlowScalp · BTC-PERP Hyperliquid · data live, refresh 5 detik</footer>
 </div>
 
 <script>
@@ -204,16 +233,20 @@ function drawChart(eq){
   const pts=eq.map(e=>({x:e.ts,y:e.equity}));
   if(!chart){
     const ctx=$("spark").getContext("2d");
-    const g=ctx.createLinearGradient(0,0,0,170);
-    g.addColorStop(0,"rgba(46,230,166,.25)");g.addColorStop(1,"rgba(46,230,166,0)");
+    const g=ctx.createLinearGradient(0,0,0,200);
+    g.addColorStop(0,"rgba(46,230,166,.28)");g.addColorStop(1,"rgba(46,230,166,0)");
     chart=new Chart(ctx,{type:"line",
-      data:{datasets:[{data:pts,borderColor:"#2ee6a6",borderWidth:2,pointRadius:0,fill:true,backgroundColor:g,tension:.25}]},
+      data:{datasets:[{data:pts,borderColor:"#2ee6a6",borderWidth:2.4,pointRadius:0,
+                       pointHitRadius:14,fill:true,backgroundColor:g,tension:.3}]},
       options:{animation:false,responsive:true,maintainAspectRatio:false,
         plugins:{legend:{display:false},tooltip:{mode:"nearest",intersect:false,
-          callbacks:{label:c=>" $"+c.parsed.y.toLocaleString("en-US",{minimumFractionDigits:2})}}},
+          backgroundColor:"#0d131c",borderColor:"#23334a",borderWidth:1,
+          titleColor:"#94a3bb",bodyColor:"#e3ebf5",
+          callbacks:{title:c=>new Date(c[0].parsed.x).toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"}),
+                     label:c=>" $"+c.parsed.y.toLocaleString("en-US",{minimumFractionDigits:2})}}},
         scales:{x:{type:"linear",display:false},
-                y:{display:true,position:"right",grid:{color:"#141d29"},border:{display:false},
-                   ticks:{color:"#5f6f87",font:{family:"'JetBrains Mono'",size:10},maxTicksLimit:4,
+                y:{display:true,position:"right",grid:{color:"rgba(255,255,255,.045)"},border:{display:false},
+                   ticks:{color:"#5d6c84",font:{family:"'JetBrains Mono'",size:10},maxTicksLimit:4,
                           callback:v=>"$"+v.toLocaleString("en-US")}}}}});
   } else {chart.data.datasets[0].data=pts;chart.update("none");}
 }
@@ -222,9 +255,8 @@ async function refresh(){
   try{
     const [st,sum,trades,eq]=await Promise.all([
       api("/api/status"),api("/api/summary"),api("/api/trades?limit=50"),api("/api/equity?range=1d")]);
-    document.documentElement.style.setProperty("--accent",st.mode==="live"?"#ff5d6c":"#ffb02e");
     const mb=$("modebadge");mb.textContent=st.mode.toUpperCase();mb.className="pill "+(st.mode==="live"?"live":"paper");
-    const sb=$("statebadge");sb.textContent=st.state;
+    const sb=$("statebadge");$("statetext").textContent=st.state;
     sb.className="pill state"+(["STOPPED","HALTED_DAILY"].includes(st.state)?" bad":
                                ["PAUSED","COOLDOWN","RECONCILE"].includes(st.state)?" warn":"");
     setv("equity",usd(st.equity));
@@ -246,9 +278,10 @@ async function refresh(){
     cls(setv("p30",usd(sum["30d"].pnl_usd,true)),sum["30d"].pnl_usd);
     setv("p30t",sum["30d"].trades+" / "+(sum["30d"].win_rate*100).toFixed(0)+"%");
     setv("pdt",String(sum.day.trades));
+    setv("pstreak",String(st.streak??"0")+"L");
 
     const p=st.open_position;
-    $("poscard").innerHTML=!p?'<div class="empty">flat — menunggu sinyal</div>':
+    $("poscard").innerHTML=!p?'<div class="emptybox"><span class="ico">📡</span>flat — bot sedang menunggu setup yang lolos semua filter</div>':
       `<div class="kv"><span class="k">arah / ukuran</span><span class="v"><span class="side ${p.side}">${p.side.toUpperCase()}</span>&nbsp; ${p.size_btc.toFixed(4)} BTC</span></div>`+
       `<div class="kv"><span class="k">entry</span><span class="v">${px(p.entry_px)}</span></div>`+
       `<div class="kv"><span class="k">stop loss / take profit</span><span class="v">${px(p.sl_px)} / ${px(p.tp_px)}</span></div>`+

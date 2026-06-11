@@ -59,6 +59,7 @@ def create_app(env, db, state, feed, store, engine) -> FastAPI:
             "day_r": round(state.day_realized_r, 2),
             "open_position": open_position,
             "mid": feed.mid,
+            "streak": state.consec_losses,
             "uptime_min": max(0, (now_ms() - state.boot_ts) // 60_000),
             "updated_at": now_ms() // 1000,
         }
