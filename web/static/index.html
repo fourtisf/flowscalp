@@ -160,7 +160,7 @@
     <span id="modebadge" class="pill paper">PAPER</span>
     <span id="statebadge" class="pill state"><span class="dotlive"></span><span id="statetext">RUNNING</span></span>
     <div class="right">
-      <span>BTC <b class="mono" id="mid">—</b></span>
+      <span><span id="coinlbl">BTC</span> <b class="mono" id="mid">—</b></span>
       <span id="uptime">—</span>
       <b class="mono" id="clock"></b>
     </div>
@@ -275,6 +275,7 @@ async function refresh(){
                                ["PAUSED","COOLDOWN","RECONCILE"].includes(st.state)?" warn":"");
     setv("equity",usd(st.equity));
     setv("mid",px(st.mid));
+    setv("coinlbl",st.coin||"BTC");
     setv("uptime","up "+Math.floor(st.uptime_min/60)+"j "+(st.uptime_min%60)+"m");
     $("clock").textContent=new Date().toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"});
     cls(setv("daypnl",usd(st.day_pnl_usd,true)),st.day_pnl_usd);

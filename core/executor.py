@@ -111,6 +111,7 @@ class PaperExecutor:
     def __init__(self, env, db, mid_provider: Callable[[], float],
                  on_fill: Callable[[Fill], Awaitable[None]]):
         self.env = env
+        self.coin = getattr(env, "coin", "BTC")
         self.db = db
         self.mid = mid_provider
         self.on_fill = on_fill
@@ -150,7 +151,7 @@ class PaperExecutor:
         self.maker_fee = float(fees["userAddRate"])
         self.taker_fee = float(fees["userCrossRate"])
         meta = await asyncio.to_thread(info.meta)
-        btc = next(a for a in meta["universe"] if a["name"] == "BTC")
+        btc = next(a for a in meta["universe"] if a["name"] == self.coin)
         self.sz_decimals = int(btc["szDecimals"])
         log.info("paper: live rates maker %.4f%% taker %.4f%%, szDecimals %d",
                  self.maker_fee * 100, self.taker_fee * 100, self.sz_decimals)
@@ -265,6 +266,7 @@ class LiveExecutor:
 
     def __init__(self, env, db, mid_provider: Callable[[], float]):
         self.env = env
+        self.coin = getattr(env, "coin", "BTC")
         self.db = db
         self.mid = mid_provider
         self.sz_decimals = 5
@@ -321,7 +323,7 @@ class LiveExecutor:
             self.env.hl_main_wallet_address or None,           # account_address → master
         )
         meta = await self._retry("meta", self._info.meta)
-        btc = next(a for a in meta["universe"] if a["name"] == "BTC")
+        btc = next(a for a in meta["universe"] if a["name"] == self.coin)
         self.sz_decimals = int(btc["szDecimals"])
         fees = await self._retry("user_fees", self._info.user_fees, self.env.trading_address)
         self.maker_fee = float(fees["userAddRate"])
@@ -337,11 +339,11 @@ class LiveExecutor:
         szi, entry_px = 0.0, 0.0
         for ap in st.get("assetPositions", []):
             p = ap["position"]
-            if p["coin"] == "BTC" and float(p["szi"]) != 0:
+            if p["coin"] == self.coin and float(p["szi"]) != 0:
                 szi = float(p["szi"])
                 entry_px = float(p["entryPx"] or 0)
         orders = await self._retry("open_orders", self._info.open_orders, self.env.trading_address)
-        return szi, entry_px, [o for o in orders if o["coin"] == "BTC"]
+        return szi, entry_px, [o for o in orders if o["coin"] == self.coin]
 
     async def equity(self) -> float:
         st = await self._retry("user_state", self._info.user_state, self.env.trading_address)
@@ -362,14 +364,14 @@ class LiveExecutor:
     async def place_entry(self, sig: Signal, size: SizeResult) -> str:
         px = round_px(sig.entry_px, self.sz_decimals)
         resp = await self._retry(
-            "place_entry", self._exchange.order, "BTC", sig.side == "long",
+            "place_entry", self._exchange.order, self.coin, sig.side == "long",
             size.size_btc, px, {"limit": {"tif": "Alo"}}, False)
         oid, _ = self._oid_from_response(resp)
         return oid
 
     async def cancel_entry(self, oid: str) -> None:
         try:
-            await self._retry("cancel", self._exchange.cancel, "BTC", int(oid))
+            await self._retry("cancel", self._exchange.cancel, self.coin, int(oid))
         except ExecError as e:
             log.info("cancel_entry %s: %s (likely already filled/canceled)", oid, e)
 
@@ -380,7 +382,7 @@ class LiveExecutor:
             raise ExecError("no mid for taker entry")
         bound = mid * (1 + TAKER_ENTRY_BOUND) if sig.side == "long" else mid * (1 - TAKER_ENTRY_BOUND)
         resp = await self._retry(
-            "taker_entry", self._exchange.order, "BTC", sig.side == "long",
+            "taker_entry", self._exchange.order, self.coin, sig.side == "long",
             sz, round_px(bound, self.sz_decimals), {"limit": {"tif": "Ioc"}}, False)
         self._oid_from_response(resp)
 
@@ -389,14 +391,14 @@ class LiveExecutor:
         sz = pos.filled_sz or pos.size_btc
         tp_px = round_px(pos.tp_px, self.sz_decimals)
         resp = await self._retry(
-            "arm_tp", self._exchange.order, "BTC", is_buy_exit, sz, tp_px,
+            "arm_tp", self._exchange.order, self.coin, is_buy_exit, sz, tp_px,
             {"limit": {"tif": "Gtc"}}, True)
         pos.oids["tp"], _ = self._oid_from_response(resp)
 
         sl_px = round_px(pos.sl_px, self.sz_decimals)
         guard = sl_px * (1 + SL_TRIGGER_BOUND) if is_buy_exit else sl_px * (1 - SL_TRIGGER_BOUND)
         resp = await self._retry(
-            "arm_sl", self._exchange.order, "BTC", is_buy_exit, sz,
+            "arm_sl", self._exchange.order, self.coin, is_buy_exit, sz,
             round_px(guard, self.sz_decimals),
             {"trigger": {"triggerPx": sl_px, "isMarket": True, "tpsl": "sl"}}, True)
         pos.oids["sl"], _ = self._oid_from_response(resp)
@@ -406,7 +408,7 @@ class LiveExecutor:
     async def cancel_all(self) -> None:
         _, _, orders = await self.reconcile_raw()
         if orders:
-            cancels = [{"coin": "BTC", "oid": o["oid"]} for o in orders]
+            cancels = [{"coin": self.coin, "oid": o["oid"]} for o in orders]
             await self._retry("cancel_all", self._exchange.bulk_cancel, cancels)
 
     async def move_tp(self, pos: Position, new_px: float) -> None:
@@ -417,7 +419,7 @@ class LiveExecutor:
         is_buy_exit = pos.side == "short"
         sz = pos.filled_sz - pos.exit_sz
         resp = await self._retry(
-            "move_tp", self._exchange.order, "BTC", is_buy_exit, sz,
+            "move_tp", self._exchange.order, self.coin, is_buy_exit, sz,
             round_px(new_px, self.sz_decimals), {"limit": {"tif": "Gtc"}}, True)
         pos.oids["tp"], _ = self._oid_from_response(resp)
 
@@ -432,10 +434,10 @@ class LiveExecutor:
             mid = self.mid()
             if not mid:
                 st = await self._retry("all_mids", self._info.all_mids)
-                mid = float(st["BTC"])
+                mid = float(st[self.coin])
             bound = mid * (1 + FLATTEN_BOUND) if is_buy else mid * (1 - FLATTEN_BOUND)
             resp = await self._retry(
-                "flatten", self._exchange.order, "BTC", is_buy, abs(szi),
+                "flatten", self._exchange.order, self.coin, is_buy, abs(szi),
                 round_px(bound, self.sz_decimals), {"limit": {"tif": "Ioc"}}, True)
             if resp.get("status") != "ok":
                 await self.db.log_event("ERROR", f"flatten attempt failed: {resp}")

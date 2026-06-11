@@ -38,20 +38,21 @@ def fmt_usd(x: float, signed: bool = False) -> str:
     return f"${s}"
 
 
-def entry_placed(side: str, px: float, mode: str) -> str:
-    return f"⏳ placing {side.upper()} entry {fmt_px(px)} ({mode})"
+def entry_placed(side: str, px: float, mode: str, coin: str = "BTC") -> str:
+    return f"⏳ placing {side.upper()} {coin} entry {fmt_px(px)} ({mode})"
 
 
-def entry_block(pos, mode: str, risk_pct: float, partial: bool = False) -> str:
+def entry_block(pos, mode: str, risk_pct: float, partial: bool = False,
+                coin: str = "BTC") -> str:
     e = "🟢" if pos.side == "long" else "🔴"
     sl_pct = (pos.sl_px - pos.entry_px) / pos.entry_px * 100
     risk = abs(pos.entry_px - pos.sl_px)
     tp_r = abs(pos.tp_px - pos.entry_px) / risk if risk > 0 else 0.0
     tag = f"{mode}, partial fill" if partial else mode
-    return (f"{e} {pos.side.upper()} BTC  ({tag})\n"
+    return (f"{e} {pos.side.upper()} {coin}  ({tag})\n"
             f"entry {fmt_px(pos.entry_px)} | sl {fmt_px(pos.sl_px)} ({sl_pct:+.2f}%)"
             f" | tp {fmt_px(pos.tp_px)} ({tp_r:.1f}R)\n"
-            f"size {pos.size_btc:.5f} BTC ({fmt_usd(pos.size_usd)}) | risk {risk_pct:.2f}% eq\n"
+            f"size {pos.size_btc:.5f} {coin} ({fmt_usd(pos.size_usd)}) | risk {risk_pct:.2f}% eq\n"
             f"reason: {pos.reason}")
 
 
@@ -59,9 +60,10 @@ _EXIT_EMOJI = {"time_stop": "⏱", "kill": "🛑"}
 
 
 def exit_block(side: str, r: float, pnl: float, entry_px: float, exit_px: float,
-               minutes: int, reason: str, day_r: float, equity: float) -> str:
+               minutes: int, reason: str, day_r: float, equity: float,
+               coin: str = "BTC") -> str:
     e = _EXIT_EMOJI.get(reason, "✅" if r >= 0 else "❌")
-    return (f"{e} CLOSED {side.upper()} BTC  {r:+.2f}R  ({fmt_usd(pnl, signed=True)})\n"
+    return (f"{e} CLOSED {side.upper()} {coin}  {r:+.2f}R  ({fmt_usd(pnl, signed=True)})\n"
             f"entry {fmt_px(entry_px)} → exit {fmt_px(exit_px)} | {minutes}m | reason: {reason.upper()}\n"
             f"day: {day_r:+.1f}R | equity {fmt_usd(equity)}")
 

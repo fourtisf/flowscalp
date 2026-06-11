@@ -113,7 +113,7 @@ class Engine:
         fees = 0.0
         try:
             raw = await asyncio.to_thread(self.executor._info.user_fills, self.env.trading_address)
-            closes = [f for f in raw if f.get("coin") == "BTC" and int(f["time"]) >= pos.ts_open
+            closes = [f for f in raw if f.get("coin") == getattr(self.env, "coin", "BTC") and int(f["time"]) >= pos.ts_open
                       and str(f.get("oid")) != pos.oids.get("entry")]
             if closes:
                 sz = sum(float(f["sz"]) for f in closes)
@@ -457,7 +457,8 @@ class Engine:
                                swept_level=sig.swept_level, reason=sig.reason,
                                oids={"entry": oid}, placed_ts=ts)
         st.set_pos_state(Pos.PENDING_ENTRY)
-        await self._notify(messages.entry_placed(sig.side, sig.entry_px, st.mode))
+        await self._notify(messages.entry_placed(sig.side, sig.entry_px, st.mode,
+                                                 getattr(self.env, 'coin', 'BTC')))
 
     async def _on_mid(self, mid: float) -> None:
         st = self.state
@@ -517,7 +518,8 @@ class Engine:
             tp_px=pos.tp_px, fees_usd=pos.fees_usd, signal_reason=pos.reason)
         await self.executor.arm_exits(pos)
         st.set_pos_state(Pos.IN_POSITION)
-        await self._notify(messages.entry_block(pos, st.mode, s.risk_pct, partial=partial)
+        await self._notify(messages.entry_block(pos, st.mode, s.risk_pct, partial=partial,
+                                                coin=getattr(self.env, 'coin', 'BTC'))
                            + messages.tx_proof(pos.entry_tx, pos.entry_tx_crossed,
                                                self.env.trading_address))
 
@@ -576,7 +578,8 @@ class Engine:
         equity = await self.executor.equity()
         await self.db.snapshot_equity(st.mode, equity, ts)
         await self._notify(messages.exit_block(pos.side, r, pnl, pos.entry_px, pos.exit_px,
-                                               minutes, reason, st.day_realized_r, equity)
+                                               minutes, reason, st.day_realized_r, equity,
+                                               coin=getattr(self.env, 'coin', 'BTC'))
                            + messages.tx_proof(pos.exit_tx, pos.exit_tx_crossed,
                                                self.env.trading_address))
         await self._circuit_breakers(s, equity)

@@ -54,6 +54,7 @@ def _to_candle(d: dict) -> Candle:
 class Feed:
     def __init__(self, env, queue: asyncio.Queue, db=None):
         self.env = env
+        self.coin = getattr(env, "coin", "BTC")
         self.queue = queue
         self.db = db
         self.candles_1m: deque[Candle] = deque(maxlen=600)
@@ -117,7 +118,7 @@ class Feed:
                                       " CVD delta warm-up starts now")
 
     async def _rest_candles(self, interval: str, start: int, end: int) -> list[Candle]:
-        raw = await asyncio.to_thread(self._rest.candles_snapshot, "BTC", interval, start, end)
+        raw = await asyncio.to_thread(self._rest.candles_snapshot, self.coin, interval, start, end)
         return [_to_candle(d) for d in raw]
 
     async def _rebootstrap_gap(self) -> None:
@@ -173,10 +174,10 @@ class Feed:
         ws = WebsocketManager(self.env.api_url)
         ws.daemon = True
         ws.start()
-        ws.subscribe({"type": "candle", "coin": "BTC", "interval": "1m"}, self._cb_candle)
-        ws.subscribe({"type": "candle", "coin": "BTC", "interval": "15m"}, self._cb_candle)
+        ws.subscribe({"type": "candle", "coin": self.coin, "interval": "1m"}, self._cb_candle)
+        ws.subscribe({"type": "candle", "coin": self.coin, "interval": "15m"}, self._cb_candle)
         ws.subscribe({"type": "allMids"}, self._cb_mids)
-        ws.subscribe({"type": "trades", "coin": "BTC"}, self._cb_trades)
+        ws.subscribe({"type": "trades", "coin": self.coin}, self._cb_trades)
         if self._user_fills_addr:
             ws.subscribe({"type": "userFills", "user": self._user_fills_addr}, self._cb_user_fills)
         self._ws = ws
@@ -212,7 +213,7 @@ class Feed:
 
     def _on_candle(self, d: dict) -> None:
         self._touch()
-        if not d or d.get("s") != "BTC":
+        if not d or d.get("s") != self.coin:
             return
         bar = _to_candle(d)
         if d.get("i") == "1m":
@@ -232,7 +233,7 @@ class Feed:
 
     def _on_mids(self, d: dict) -> None:
         self._touch()
-        px = d.get("mids", {}).get("BTC")
+        px = d.get("mids", {}).get(self.coin)
         if px is not None:
             self.mid = float(px)
             self.queue.put_nowait(("mid", self.mid))
@@ -240,7 +241,7 @@ class Feed:
     def _on_trades(self, trades: list) -> None:
         self._touch()
         for t in trades:
-            if t.get("coin") != "BTC":
+            if t.get("coin") != self.coin:
                 continue
             sz = float(t["sz"])
             bucket = int(t["time"]) // ONE_MIN_MS * ONE_MIN_MS
@@ -251,7 +252,7 @@ class Feed:
         if d.get("isSnapshot"):
             return  # historical snapshot on subscribe, not new fills
         for f in d.get("fills", []):
-            if f.get("coin") == "BTC":
+            if f.get("coin") == self.coin:
                 self.queue.put_nowait(("fill", f))
 
     # -- bar finalization -----------------------------------------------------------
@@ -301,7 +302,7 @@ class Feed:
             try:
                 meta, ctxs = await asyncio.to_thread(self._rest.meta_and_asset_ctxs)
                 if self._btc_asset_idx is None:
-                    self._btc_asset_idx = next(i for i, a in enumerate(meta["universe"]) if a["name"] == "BTC")
+                    self._btc_asset_idx = next(i for i, a in enumerate(meta["universe"]) if a["name"] == self.coin)
                 ctx = ctxs[self._btc_asset_idx]
                 self.current_funding_hourly = float(ctx["funding"])
                 self.open_interest = float(ctx["openInterest"])

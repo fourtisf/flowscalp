@@ -144,8 +144,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--end", required=True)
     ap.add_argument("--out", default="data/btc_1m.csv")
     ap.add_argument("--interval", default="1m")
+    ap.add_argument("--coin", default="BTC")
     args = ap.parse_args(argv)
-    candles = download_candles(_parse_date(args.start), _parse_date(args.end), args.interval)
+    candles = download_candles(_parse_date(args.start), _parse_date(args.end), args.interval,
+                               coin=args.coin.upper())
     save_candles(candles, args.out)
     print(f"saved {len(candles)} candles → {args.out}")
     return 0
