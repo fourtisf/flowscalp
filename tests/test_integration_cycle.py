@@ -225,3 +225,21 @@ async def test_time_stop_via_timer(harness):
     tr = (await db.recent_trades("paper", 1))[0]
     assert tr["exit_reason"] == "time_stop"
     assert any("⏱" in m for m in notifier.msgs)
+
+
+async def test_testtrade_injects_full_cycle(harness):
+    engine, db, feed, state, notifier, sig_bar = await harness()
+    feed.mid = 100_000.0
+    res = await engine._cmd_testtrade()
+    assert "test trade dipasang" in res
+    assert state.pos_state == Pos.PENDING_ENTRY
+    entry_px = state.position.entry_px
+    await engine._dispatch("mid", entry_px - 5)       # tick through → maker fill
+    assert state.pos_state == Pos.IN_POSITION
+    assert any("LONG BTC" in m for m in notifier.msgs)
+    res2 = await engine._cmd_testtrade()
+    assert "tidak bisa" in res2                       # one position at a time
+    await engine._cmd_stop()                          # close it out
+    assert (await db.recent_trades("paper", 1))[0]["exit_reason"] == "kill"
+    state.mode = "live"
+    assert "hanya tersedia di mode paper" in await engine._cmd_testtrade()

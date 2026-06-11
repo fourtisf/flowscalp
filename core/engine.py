@@ -266,6 +266,29 @@ class Engine:
             st.set_bot_state(Bot.RUNNING)
             raise RuntimeError(f"mode switch failed, staying in {st.mode}: {e}") from e
 
+    async def _cmd_testtrade(self) -> str:
+        """Inject one synthetic trade (paper only) to exercise the full
+        entry→manage→exit pipeline on demand."""
+        st = self.state
+        if st.mode != "paper":
+            return "testtrade hanya tersedia di mode paper — di live, entry hanya lewat sinyal"
+        if st.bot_state != Bot.RUNNING or st.pos_state != Pos.FLAT:
+            return f"tidak bisa sekarang: state {st.bot_state.value}/{st.pos_state.value}"
+        mid = self.feed.mid
+        if not mid:
+            return "harga belum tersedia — feed masih menyambung"
+        s = self.store.current
+        entry = mid * 1.0002          # a hair above mid so the first downtick fills it
+        sl = entry * 0.997            # 0.3% test stop
+        sig = Signal("long", entry, sl, entry + s.tp_r * (entry - sl),
+                     swept_level=round(mid), reason="TEST TRADE manual — bukan sinyal strategi")
+        await self._place_entry(sig, s, now_ms())
+        if st.pos_state == Pos.PENDING_ENTRY:
+            return (f"🧪 test trade dipasang: LONG @ ~{entry:,.0f} (paper).\n"
+                    f"fill maker biasanya beberapa detik; SL/TP/time-stop berjalan normal —"
+                    f" pantau alert & dashboard.")
+        return "entry tidak terpasang — cek /status dan events log"
+
     async def _cmd_report(self) -> str:
         await self._send_daily_report(today=True)
         return "report posted"
