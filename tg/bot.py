@@ -392,6 +392,18 @@ class TgBot:
         except Exception:  # noqa: BLE001
             pass
         data = q.data or ""
+        if data == "ttlive":
+            armed = getattr(self, "_tt_armed", 0.0)
+            self._tt_armed = 0.0
+            if not armed or time.monotonic() - armed > PENDING_INPUT_TTL_S:
+                await q.edit_message_text("kedaluwarsa — kirim /testtrade lagi untuk mengulang")
+                return
+            try:
+                res = await self.engine.submit("testtrade", live_ok=True)
+            except Exception as e:  # noqa: BLE001
+                res = f"⚠️ gagal: {e}"
+            await q.edit_message_text(res)
+            return
         if data in ("closepos", "closemaker"):
             try:
                 res = await self.engine.submit(data)
@@ -560,6 +572,16 @@ class TgBot:
         await self._reply(update, messages.settings_text(self.store.current))
 
     async def cmd_testtrade(self, update, context) -> None:
+        if self.state.mode == "live":
+            self._tt_armed = time.monotonic()
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🔴 Ya, eksekusi trade uji REAL (≈$11, SL/TP terpasang)",
+                callback_data="ttlive")]])
+            await update.effective_message.reply_text(
+                "⚠️ Anda di mode LIVE — trade uji ini memakai uang sungguhan.\n"
+                "Ukurannya dipaksa MINIMAL (≈$11 notional): rugi maksimal hitungan sen + fee.\n"
+                "Tekan tombol dalam 2 menit untuk melanjutkan.", reply_markup=kb)
+            return
         await self._submit_reply(update, "testtrade")
 
     async def cmd_pause(self, update, context) -> None:

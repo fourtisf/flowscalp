@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -302,18 +303,40 @@ class Engine:
                 f"terisi begitu harga melewatinya; SL tetap berjaga.\n"
                 f"kalau harga kabur dan Anda ingin pasti keluar → tombol market.")
 
-    async def _cmd_testtrade(self) -> str:
-        """Inject one synthetic trade (paper only) to exercise the full
-        entry→manage→exit pipeline on demand."""
+    async def _cmd_testtrade(self, live_ok: bool = False) -> str:
+        """Inject one synthetic trade to exercise the entry→manage→exit
+        pipeline. Paper: normal sizing. Live: requires explicit confirmation
+        and uses the MINIMUM viable size (~$11 notional) — an execution
+        check, not a bet."""
         st = self.state
-        if st.mode != "paper":
-            return "testtrade hanya tersedia di mode paper — di live, entry hanya lewat sinyal"
         if st.bot_state != Bot.RUNNING or st.pos_state != Pos.FLAT:
             return f"tidak bisa sekarang: state {st.bot_state.value}/{st.pos_state.value}"
+        if st.mode == "live" and not live_ok:
+            return "trade uji di akun REAL butuh konfirmasi — kirim /testtrade lalu tekan tombolnya"
         mid = self.feed.mid
         if not mid:
             return "harga belum tersedia — feed masih menyambung"
         s = self.store.current
+
+        if st.mode == "live":
+            # passive maker just under mid; minimal size clearing the $10 floor
+            entry = mid * 0.9999
+            sz = math.ceil((11.0 / entry) * 10 ** 5) / 10 ** 5
+            sl = entry * 0.997
+            sig = Signal("long", entry, sl, entry + s.tp_r * (entry - sl),
+                         swept_level=round(mid),
+                         reason="TEST TRADE REAL — ukuran minimal, bukan sinyal strategi")
+            eq = await self.executor.equity()
+            override = risk.SizeResult(True, sz, sz * entry, (sz * entry) / max(eq, 1.0), False)
+            await self._place_entry(sig, s, now_ms(), size_override=override)
+            if st.pos_state == Pos.PENDING_ENTRY:
+                return (f"🔴 test trade REAL dipasang: LONG {sz} BTC (≈${sz * entry:,.2f})"
+                        f" @ ~{entry:,.0f}.\n"
+                        f"order maker pasif — kalau {s.maker_timeout_s} detik tidak terisi,"
+                        f" otomatis batal (kirim ulang saja).\n"
+                        f"SL/TP terpasang di exchange; rugi maksimal ±sen + fee.")
+            return "entry tidak terpasang — cek /status dan events log"
+
         entry = mid * 1.0002          # a hair above mid so the first downtick fills it
         sl = entry * 0.997            # 0.3% test stop
         sig = Signal("long", entry, sl, entry + s.tp_r * (entry - sl),
@@ -362,10 +385,12 @@ class Engine:
             return
         await self._place_entry(sig, s, bar.ts + 60_000)
 
-    async def _place_entry(self, sig: Signal, s: Settings, ts: int) -> None:
+    async def _place_entry(self, sig: Signal, s: Settings, ts: int,
+                           size_override: Optional[risk.SizeResult] = None) -> None:
         st = self.state
         equity = await self.executor.equity()
-        size = risk.position_size(equity, sig.entry_px, sig.sl_px, s, self.executor.sz_decimals)
+        size = size_override or risk.position_size(equity, sig.entry_px, sig.sl_px, s,
+                                                   self.executor.sz_decimals)
         if not size.ok:
             await self.db.log_event("INFO", f"size skip: {size.skip_reason}")
             return

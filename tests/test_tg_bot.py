@@ -362,3 +362,20 @@ async def test_live_position_message_updates_and_finalizes(bot):
     bot.state.pos_state = Pos.FLAT
     await _aio.wait_for(task, timeout=2)
     assert "sudah ditutup" in edits[-1]
+
+
+async def test_live_testtrade_button_flow(bot):
+    bot.state.mode = "live"
+    upd, st = mk_update_chat(OWNER)
+    await bot.cmd_testtrade(upd, mk_ctx())
+    assert bot.engine_stub.calls == []                       # nothing executed yet
+    assert any("LIVE" in r for r in st["replies"]) and st["markups"][0] is not None
+    upd2, st2 = mk_callback(OWNER, "ttlive")
+    await bot.on_callback(upd2, mk_ctx())
+    assert ("testtrade", {"live_ok": True}) in bot.engine_stub.calls
+    # expired arm → refused
+    bot._tt_armed = 0.0
+    upd3, st3 = mk_callback(OWNER, "ttlive")
+    await bot.on_callback(upd3, mk_ctx())
+    assert "kedaluwarsa" in st3["edits"][0]
+    assert len([c for c in bot.engine_stub.calls if c[0] == "testtrade"]) == 1

@@ -283,3 +283,20 @@ async def test_eco_close_fills_as_maker_and_books_manual(harness):
     expected_exit_fee = (entry + 30) * tr["size_btc"] * maker_fee
     assert tr["fees_usd"] == pytest.approx(
         entry * tr["size_btc"] * maker_fee + expected_exit_fee, rel=1e-9)
+
+
+async def test_live_testtrade_requires_confirmation_and_uses_minimal_size(harness):
+    engine, db, feed, state, notifier, sig_bar = await harness()
+    feed.mid = 100_000.0
+    state.mode = "live"   # paper executor underneath: exercises the code path safely
+
+    res = await engine._cmd_testtrade()                  # no confirmation
+    assert "butuh konfirmasi" in res
+    assert state.pos_state == Pos.FLAT
+
+    res = await engine._cmd_testtrade(live_ok=True)
+    assert "REAL" in res and state.pos_state == Pos.PENDING_ENTRY
+    pos = state.position
+    assert pos.size_btc == pytest.approx(0.00012, abs=1e-9)   # ceil($11/$99,990)
+    assert pos.size_btc * pos.entry_px == pytest.approx(11.9988, abs=0.05)
+    assert "REAL" in pos.reason
