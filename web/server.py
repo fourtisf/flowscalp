@@ -50,6 +50,7 @@ def create_app(env, db, state, feed, store, engine) -> FastAPI:
             d = 1 if pos.side == "long" else -1
             upnl = d * (feed.mid - pos.entry_px) * pos.filled_sz if feed.mid else 0.0
             open_position = {
+                "coin": getattr(pos, "coin", "") or getattr(env, "coin", "BTC"),
                 "side": pos.side, "entry_px": pos.entry_px, "size_btc": pos.filled_sz,
                 "sl_px": pos.sl_px, "tp_px": pos.tp_px,
                 "upnl_usd": round(upnl, 2),
@@ -64,6 +65,7 @@ def create_app(env, db, state, feed, store, engine) -> FastAPI:
             "open_position": open_position,
             "mid": feed.mid,
             "coin": getattr(env, "coin", "BTC"),
+            "mids": dict(getattr(feed, "mids", {}) or {}),
             "streak": state.consec_losses,
             "uptime_min": max(0, (now_ms() - state.boot_ts) // 60_000),
             **(await _strategy_status()),

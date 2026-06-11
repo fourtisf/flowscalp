@@ -184,7 +184,7 @@ async def test_kill_switch_flattens_and_stops(harness):
     assert tr["exit_reason"] == "kill"
     assert tr["exit_px"] == pytest.approx(99_980.0 * 0.9999)  # mid − 1bp adverse
     assert any("KILL SWITCH" in m for m in notifier.msgs)
-    assert state.last_swept_level["long"] == 99_900
+    assert state.last_swept_level["BTC:long"] == 99_900
 
     # while STOPPED a signal bar must not enter
     sig2 = Candle(t + 2 * MIN, 99_950.0, 100_000.0, 99_845.0, 99_960.0, 200.0)
@@ -335,3 +335,52 @@ async def test_why_diagnoses_blocking_stage(harness):
     assert "KENAPA BELUM ENTRY" in res
     assert "sesi entry" in res and "volatilitas" in res and "struktur sweep" in res
     assert "ATR" in res
+
+
+async def test_multi_coin_signal_and_single_position_lock(harness):
+    """A SOL-book signal opens a SOL position; while it lives, a perfect BTC
+    signal must NOT open a second position (one position total)."""
+    from collections import deque
+    from tests.synth import long_sweep_same_bar as sweep, flat_15m as f15
+    engine, db, feed, state, notifier, sig_bar = await harness()
+
+    sol_c1m = sweep(vol_sweep=200.0)
+    class SolBook:
+        candles_1m = deque(sol_c1m, maxlen=600)
+        deltas_1m = deque([0.0] * len(sol_c1m), maxlen=600)
+        candles_15m = deque(f15(), maxlen=300)
+        funding_hourly = None
+    feed.books = {"BTC": feed, "SOL": SolBook()}
+    feed.book = lambda c: feed.books[c]
+    feed.mid_of = lambda c: 99_960.0
+    feed.primary = "BTC"
+    feed.mids = {"BTC": 99_960.0, "SOL": 99_960.0}
+    import time as _t
+    feed.last_tick_ts = int(_t.time() * 1000)
+
+    await engine._dispatch("candle_1m_closed", ("SOL", sol_c1m[-1]))
+    assert state.pos_state == Pos.PENDING_ENTRY
+    assert state.position.coin == "SOL"
+    assert any("LONG SOL" in m or "placing LONG SOL" in m for m in notifier.msgs)
+
+    fill = Candle(sol_c1m[-1].ts + MIN, 99_950.0, 99_990.0, 99_940.0, 99_970.0, 100.0)
+    SolBook.candles_1m.append(fill)
+    SolBook.deltas_1m.append(0.0)
+    await engine._dispatch("candle_1m_closed", ("SOL", fill))
+    assert state.pos_state == Pos.IN_POSITION
+
+    # perfect BTC signal arrives → blocked: one position at a time
+    feed.push_bar(sig_bar)
+    await engine._dispatch("candle_1m_closed", ("BTC", sig_bar))
+    assert state.position.coin == "SOL"           # unchanged
+    tr_open = state.position.trade_id
+
+    tp = state.position.tp_px
+    tp_bar = Candle(sol_c1m[-1].ts + 3 * MIN, 99_980.0, tp + 50, 99_975.0, tp + 10, 100.0)
+    SolBook.candles_1m.append(tp_bar)
+    SolBook.deltas_1m.append(0.0)
+    await engine._dispatch("candle_1m_closed", ("SOL", tp_bar))
+    assert state.pos_state == Pos.FLAT
+    row = (await db.recent_trades("paper", 1))[0]
+    assert row["id"] == tr_open and row["coin"] == "SOL" and row["exit_reason"] == "tp"
+    assert state.last_swept_level["SOL:long"] == 99_900

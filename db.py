@@ -53,6 +53,9 @@ class Database:
         await self._conn.execute("PRAGMA synchronous=NORMAL")
         await self._conn.executescript(SCHEMA)
         await self._conn.commit()
+        cols = [r[1] for r in await self.fetchall("PRAGMA table_info(trades)")]
+        if "coin" not in cols:
+            await self._write("ALTER TABLE trades ADD COLUMN coin TEXT DEFAULT ''")
 
     async def close(self) -> None:
         if self._conn:
@@ -81,11 +84,12 @@ class Database:
     # -- trades --------------------------------------------------------------
     async def insert_trade(self, *, mode: str, side: str, ts_open: int, entry_px: float,
                            size_btc: float, size_usd: float, sl_px: float, tp_px: float,
-                           fees_usd: float = 0.0, signal_reason: str = "") -> int:
+                           fees_usd: float = 0.0, signal_reason: str = "", coin: str = "") -> int:
         cur = await self._write(
             "INSERT INTO trades (mode, side, ts_open, entry_px, size_btc, size_usd, sl_px, tp_px,"
-            " fees_usd, signal_reason) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (mode, side, ts_open, entry_px, size_btc, size_usd, sl_px, tp_px, fees_usd, signal_reason),
+            " fees_usd, signal_reason, coin) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (mode, side, ts_open, entry_px, size_btc, size_usd, sl_px, tp_px, fees_usd,
+             signal_reason, coin),
         )
         return cur.lastrowid
 

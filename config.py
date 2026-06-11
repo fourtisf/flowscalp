@@ -42,7 +42,8 @@ class Env:
     dash_public: bool = False        # True = dashboard open without bearer token
     dash_public_url: str = ""        # optional fixed URL reported by /dashboard
     auto_relive: bool = False        # True = a restart restores live mode automatically
-    coin: str = "BTC"                # perp symbol to trade (one at a time)
+    coin: str = "BTC"                # primary symbol (first of coins)
+    coins: tuple = ("BTC",)          # watched symbols; one open position total
 
     @property
     def api_url(self) -> str:
@@ -80,7 +81,8 @@ class Env:
             dash_public=os.environ.get("DASH_PUBLIC", "").strip().lower() in _TRUE,
             dash_public_url=os.environ.get("DASH_PUBLIC_URL", "").strip().rstrip("/"),
             auto_relive=os.environ.get("AUTO_RELIVE", "").strip().lower() in _TRUE,
-            coin=os.environ.get("COIN", "BTC").strip().upper() or "BTC",
+            coin=_coins_env()[0],
+            coins=_coins_env(),
         )
 
 
@@ -179,6 +181,12 @@ LABELS: dict[str, str] = {
     "funding_filter": "Filter funding",
     "bias_filter": "Filter tren 15m",
 }
+
+def _coins_env() -> tuple:
+    raw = os.environ.get("COINS", "") or os.environ.get("COIN", "BTC")
+    out = tuple(dict.fromkeys(c.strip().upper() for c in raw.split(",") if c.strip()))
+    return out or ("BTC",)
+
 
 _TRUE = {"true", "1", "on", "yes"}
 _FALSE = {"false", "0", "off", "no"}

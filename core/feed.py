@@ -1,23 +1,19 @@
 """Market data feed: REST bootstrap + websocket subscriptions with supervision.
 
-Pushes events onto the engine queue:
-  ("candle_1m_closed", Candle), ("candle_15m_closed", Candle),
-  ("mid", float), ("fill", raw_userfill_dict)
+Multi-coin: every coin in env.coins gets its own buffers ("book"); the engine
+still opens at most ONE position across all of them. Events carry the coin:
 
-Design notes (verified against hyperliquid-python-sdk 0.24 source):
-- The SDK WebsocketManager is a thread wrapping websocket-client's run_forever
-  with NO reconnect: when the socket drops, the thread exits. The supervisor
-  task here detects that (thread death or message staleness) and rebuilds the
-  manager with exponential backoff 1s→30s, resubscribes, and re-bootstraps the
-  candle gap via REST candleSnapshot.
-- WS callbacks fire on the manager thread; they are bridged onto the asyncio
-  loop with call_soon_threadsafe, so all buffer mutations happen on the loop.
-- Hyperliquid candle messages update the LIVE bar in place; a bar is treated
-  as closed when a message with a newer open-ts arrives (timestamp rollover)
-  or when the wall clock passes its close time + grace (dead-tape minutes).
-- Trade messages carry the taker side in the "side" field: "B" = taker buy,
-  "A" = taker sell. Per-1m delta = Σ(taker-buy sz) − Σ(taker-sell sz).
-  Bars that predate the live trades stream have delta=None (CVD warm-up).
+  ("candle_1m_closed", (coin, Candle)), ("candle_15m_closed", (coin, Candle)),
+  ("mid", (coin, float)), ("fill", raw_userfill_dict)
+
+Legacy single-coin attributes (candles_1m, deltas_1m, candles_15m, mid)
+expose the PRIMARY (first) coin for older callers.
+
+Design notes (verified against hyperliquid-python-sdk 0.24): the SDK
+WebsocketManager thread has no reconnect — the supervisor here rebuilds it
+with backoff, resubscribes every coin and re-bootstraps candle gaps via REST.
+Trade messages carry the taker side ("B" buy / "A" sell); per-1m delta =
+Σ(taker-buy sz) − Σ(taker-sell sz); bars predating the live stream get None.
 """
 from __future__ import annotations
 
@@ -25,7 +21,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from typing import Any, Optional
+from typing import Optional
 
 from hyperliquid.info import Info
 from hyperliquid.websocket_manager import WebsocketManager
@@ -51,31 +47,69 @@ def _to_candle(d: dict) -> Candle:
                   low=float(d["l"]), close=float(d["c"]), volume=float(d["v"]))
 
 
+class CoinBook:
+    """Per-coin market state."""
+
+    def __init__(self) -> None:
+        self.candles_1m: deque[Candle] = deque(maxlen=600)
+        self.deltas_1m: deque[Optional[float]] = deque(maxlen=600)
+        self.candles_15m: deque[Candle] = deque(maxlen=300)
+        self.live_1m: Optional[Candle] = None
+        self.live_15m: Optional[Candle] = None
+        self.delta_acc: dict[int, float] = {}
+        self.delta_live_from: Optional[int] = None
+        self.funding_hourly: Optional[float] = None
+        self.open_interest: Optional[float] = None
+        self.asset_idx: Optional[int] = None
+
+
 class Feed:
     def __init__(self, env, queue: asyncio.Queue, db=None):
         self.env = env
-        self.coin = getattr(env, "coin", "BTC")
+        self.coins: tuple = tuple(getattr(env, "coins", None) or (getattr(env, "coin", "BTC"),))
         self.queue = queue
         self.db = db
-        self.candles_1m: deque[Candle] = deque(maxlen=600)
-        self.deltas_1m: deque[Optional[float]] = deque(maxlen=600)  # aligned 1:1 with candles_1m
-        self.candles_15m: deque[Candle] = deque(maxlen=300)
-        self.mid: float = 0.0
-        self.last_tick_ts: int = 0          # last ws message of any kind, ms
-        self.current_funding_hourly: Optional[float] = None
-        self.open_interest: Optional[float] = None
+        self.books: dict[str, CoinBook] = {c: CoinBook() for c in self.coins}
+        self.mids: dict[str, float] = {c: 0.0 for c in self.coins}
+        self.last_tick_ts: int = 0
 
-        self._live_1m: Optional[Candle] = None
-        self._live_15m: Optional[Candle] = None
-        self._delta_acc: dict[int, float] = {}
-        self._delta_live_from: Optional[int] = None  # first 1m bucket with complete trade data
         self._rest: Optional[Info] = None
         self._ws: Optional[WebsocketManager] = None
         self._user_fills_addr: Optional[str] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
-        self._btc_asset_idx: Optional[int] = None
+
+    # -- legacy single-coin views (primary coin) --------------------------------
+    @property
+    def primary(self) -> str:
+        return self.coins[0]
+
+    def book(self, coin: str) -> CoinBook:
+        return self.books[coin]
+
+    def mid_of(self, coin: str) -> float:
+        return self.mids.get(coin, 0.0)
+
+    @property
+    def candles_1m(self):
+        return self.books[self.primary].candles_1m
+
+    @property
+    def deltas_1m(self):
+        return self.books[self.primary].deltas_1m
+
+    @property
+    def candles_15m(self):
+        return self.books[self.primary].candles_15m
+
+    @property
+    def mid(self) -> float:
+        return self.mids.get(self.primary, 0.0)
+
+    @property
+    def current_funding_hourly(self) -> Optional[float]:
+        return self.books[self.primary].funding_hourly
 
     # -- lifecycle -------------------------------------------------------------
     async def start(self) -> None:
@@ -97,7 +131,6 @@ class Feed:
             await asyncio.to_thread(self._teardown_ws)
 
     def enable_user_fills(self, address: str) -> None:
-        """Subscribe userFills for the trading account (live mode)."""
         self._user_fills_addr = address
         if self._ws is not None:
             self._ws.subscribe({"type": "userFills", "user": address}, self._cb_user_fills)
@@ -105,39 +138,38 @@ class Feed:
     # -- REST bootstrap ---------------------------------------------------------
     async def _bootstrap_candles(self) -> None:
         end = now_ms()
-        c1 = await self._rest_candles("1m", end - BOOTSTRAP_1M * ONE_MIN_MS, end)
-        c15 = await self._rest_candles("15m", end - BOOTSTRAP_15M * FIFTEEN_MIN_MS, end)
-        for bar in c1:
-            if bar.ts + ONE_MIN_MS <= end:  # closed only
-                self._append_1m(bar, delta=None, emit=False)
-        for bar in c15:
-            if bar.ts + FIFTEEN_MIN_MS <= end:
-                self._append_15m(bar, emit=False)
-        log.info("bootstrap: %d x 1m, %d x 15m closed candles", len(self.candles_1m), len(self.candles_15m))
-        await self._log_event("INFO", f"feed bootstrap {len(self.candles_1m)}x1m {len(self.candles_15m)}x15m;"
+        for coin in self.coins:
+            b = self.books[coin]
+            for bar in await self._rest_candles(coin, "1m", end - BOOTSTRAP_1M * ONE_MIN_MS, end):
+                if bar.ts + ONE_MIN_MS <= end:
+                    self._append_1m(coin, b, bar, delta=None, emit=False)
+            for bar in await self._rest_candles(coin, "15m", end - BOOTSTRAP_15M * FIFTEEN_MIN_MS, end):
+                if bar.ts + FIFTEEN_MIN_MS <= end:
+                    self._append_15m(coin, b, bar, emit=False)
+            log.info("bootstrap %s: %d x 1m, %d x 15m", coin, len(b.candles_1m), len(b.candles_15m))
+        await self._log_event("INFO", f"feed bootstrap {', '.join(self.coins)};"
                                       " CVD delta warm-up starts now")
 
-    async def _rest_candles(self, interval: str, start: int, end: int) -> list[Candle]:
-        raw = await asyncio.to_thread(self._rest.candles_snapshot, self.coin, interval, start, end)
+    async def _rest_candles(self, coin: str, interval: str, start: int, end: int) -> list[Candle]:
+        raw = await asyncio.to_thread(self._rest.candles_snapshot, coin, interval, start, end)
         return [_to_candle(d) for d in raw]
 
     async def _rebootstrap_gap(self) -> None:
-        """After a reconnect, backfill 1m/15m bars missed during the outage."""
         end = now_ms()
-        if self.candles_1m:
-            start = self.candles_1m[-1].ts + ONE_MIN_MS
-            if end - start > ONE_MIN_MS:
-                for bar in await self._rest_candles("1m", start, end):
-                    if bar.ts + ONE_MIN_MS <= end:
-                        self._append_1m(bar, delta=None, emit=False)  # gap bars: no trade data
-        else:
-            await self._bootstrap_candles()
-        if self.candles_15m:
-            start = self.candles_15m[-1].ts + FIFTEEN_MIN_MS
-            if end - start > FIFTEEN_MIN_MS:
-                for bar in await self._rest_candles("15m", start, end):
-                    if bar.ts + FIFTEEN_MIN_MS <= end:
-                        self._append_15m(bar, emit=False)
+        for coin in self.coins:
+            b = self.books[coin]
+            if b.candles_1m:
+                start = b.candles_1m[-1].ts + ONE_MIN_MS
+                if end - start > ONE_MIN_MS:
+                    for bar in await self._rest_candles(coin, "1m", start, end):
+                        if bar.ts + ONE_MIN_MS <= end:
+                            self._append_1m(coin, b, bar, delta=None, emit=False)
+            if b.candles_15m:
+                start = b.candles_15m[-1].ts + FIFTEEN_MIN_MS
+                if end - start > FIFTEEN_MIN_MS:
+                    for bar in await self._rest_candles(coin, "15m", start, end):
+                        if bar.ts + FIFTEEN_MIN_MS <= end:
+                            self._append_15m(coin, b, bar, emit=False)
 
     # -- websocket supervision ---------------------------------------------------
     async def _ws_supervisor(self) -> None:
@@ -154,7 +186,7 @@ class Feed:
                         raise ConnectionError("websocket dead or stale")
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 log.warning("feed ws: %s — reconnecting in %.0fs", e, backoff)
                 await self._log_event("WARN", f"feed ws reconnect: {e}")
                 await asyncio.to_thread(self._teardown_ws)
@@ -170,20 +202,21 @@ class Feed:
         return now_ms() - self.last_tick_ts < WS_STALE_MS
 
     def _build_ws(self) -> None:
-        """Runs in a worker thread: construct manager + queue subscriptions."""
         ws = WebsocketManager(self.env.api_url)
         ws.daemon = True
         ws.start()
-        ws.subscribe({"type": "candle", "coin": self.coin, "interval": "1m"}, self._cb_candle)
-        ws.subscribe({"type": "candle", "coin": self.coin, "interval": "15m"}, self._cb_candle)
+        for coin in self.coins:
+            ws.subscribe({"type": "candle", "coin": coin, "interval": "1m"}, self._cb_candle)
+            ws.subscribe({"type": "candle", "coin": coin, "interval": "15m"}, self._cb_candle)
+            ws.subscribe({"type": "trades", "coin": coin}, self._cb_trades)
         ws.subscribe({"type": "allMids"}, self._cb_mids)
-        ws.subscribe({"type": "trades", "coin": self.coin}, self._cb_trades)
         if self._user_fills_addr:
             ws.subscribe({"type": "userFills", "user": self._user_fills_addr}, self._cb_user_fills)
         self._ws = ws
-        # trades from a partial first minute would under-count delta: live from next boundary
-        self._delta_live_from = (now_ms() // ONE_MIN_MS + 1) * ONE_MIN_MS
-        self._delta_acc.clear()
+        live_from = (now_ms() // ONE_MIN_MS + 1) * ONE_MIN_MS
+        for b in self.books.values():
+            b.delta_live_from = live_from
+            b.delta_acc.clear()
         self.last_tick_ts = now_ms()
 
     def _teardown_ws(self) -> None:
@@ -191,7 +224,7 @@ class Feed:
         if ws is not None:
             try:
                 ws.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
     # -- ws callbacks (manager thread → loop) -------------------------------------
@@ -213,102 +246,108 @@ class Feed:
 
     def _on_candle(self, d: dict) -> None:
         self._touch()
-        if not d or d.get("s") != self.coin:
+        coin = d.get("s")
+        if not d or coin not in self.books:
             return
+        b = self.books[coin]
         bar = _to_candle(d)
         if d.get("i") == "1m":
-            live = self._live_1m
-            if live is not None and bar.ts > live.ts:
-                self._finalize_1m(live)
-            if self.candles_1m and bar.ts <= self.candles_1m[-1].ts:
-                return  # stale update for an already-closed bar
-            self._live_1m = bar
-        elif d.get("i") == "15m":
-            live = self._live_15m
-            if live is not None and bar.ts > live.ts:
-                self._append_15m(live, emit=True)
-            if self.candles_15m and bar.ts <= self.candles_15m[-1].ts:
+            if b.live_1m is not None and bar.ts > b.live_1m.ts:
+                self._finalize_1m(coin, b, b.live_1m)
+            if b.candles_1m and bar.ts <= b.candles_1m[-1].ts:
                 return
-            self._live_15m = bar
+            b.live_1m = bar
+        elif d.get("i") == "15m":
+            if b.live_15m is not None and bar.ts > b.live_15m.ts:
+                self._append_15m(coin, b, b.live_15m, emit=True)
+            if b.candles_15m and bar.ts <= b.candles_15m[-1].ts:
+                return
+            b.live_15m = bar
 
     def _on_mids(self, d: dict) -> None:
         self._touch()
-        px = d.get("mids", {}).get(self.coin)
-        if px is not None:
-            self.mid = float(px)
-            self.queue.put_nowait(("mid", self.mid))
+        mids = d.get("mids", {})
+        for coin in self.coins:
+            px = mids.get(coin)
+            if px is not None:
+                self.mids[coin] = float(px)
+                self.queue.put_nowait(("mid", (coin, self.mids[coin])))
 
     def _on_trades(self, trades: list) -> None:
         self._touch()
         for t in trades:
-            if t.get("coin") != self.coin:
+            coin = t.get("coin")
+            if coin not in self.books:
                 continue
+            b = self.books[coin]
             sz = float(t["sz"])
             bucket = int(t["time"]) // ONE_MIN_MS * ONE_MIN_MS
-            self._delta_acc[bucket] = self._delta_acc.get(bucket, 0.0) + (sz if t["side"] == "B" else -sz)
+            b.delta_acc[bucket] = b.delta_acc.get(bucket, 0.0) + (sz if t["side"] == "B" else -sz)
 
     def _on_user_fills(self, d: dict) -> None:
         self._touch()
         if d.get("isSnapshot"):
-            return  # historical snapshot on subscribe, not new fills
+            return
         for f in d.get("fills", []):
-            if f.get("coin") == self.coin:
+            if f.get("coin") in self.books:
                 self.queue.put_nowait(("fill", f))
 
     # -- bar finalization -----------------------------------------------------------
-    def _finalize_1m(self, bar: Candle) -> None:
-        if self.candles_1m and bar.ts <= self.candles_1m[-1].ts:
+    def _finalize_1m(self, coin: str, b: CoinBook, bar: Candle) -> None:
+        if b.candles_1m and bar.ts <= b.candles_1m[-1].ts:
             return
-        if self._delta_live_from is not None and bar.ts >= self._delta_live_from:
-            delta = self._delta_acc.pop(bar.ts, 0.0)
+        if b.delta_live_from is not None and bar.ts >= b.delta_live_from:
+            delta = b.delta_acc.pop(bar.ts, 0.0)
         else:
             delta = None
-        for k in [k for k in self._delta_acc if k <= bar.ts - 5 * ONE_MIN_MS]:
-            self._delta_acc.pop(k, None)
-        self._append_1m(bar, delta=delta, emit=True)
+        for k in [k for k in b.delta_acc if k <= bar.ts - 5 * ONE_MIN_MS]:
+            b.delta_acc.pop(k, None)
+        self._append_1m(coin, b, bar, delta=delta, emit=True)
 
-    def _append_1m(self, bar: Candle, delta: Optional[float], emit: bool) -> None:
-        if self.candles_1m and bar.ts <= self.candles_1m[-1].ts:
+    def _append_1m(self, coin: str, b: CoinBook, bar: Candle,
+                   delta: Optional[float], emit: bool) -> None:
+        if b.candles_1m and bar.ts <= b.candles_1m[-1].ts:
             return
-        self.candles_1m.append(bar)
-        self.deltas_1m.append(delta)
+        b.candles_1m.append(bar)
+        b.deltas_1m.append(delta)
         if emit:
-            self.queue.put_nowait(("candle_1m_closed", bar))
+            self.queue.put_nowait(("candle_1m_closed", (coin, bar)))
 
-    def _append_15m(self, bar: Candle, emit: bool) -> None:
-        if self.candles_15m and bar.ts <= self.candles_15m[-1].ts:
+    def _append_15m(self, coin: str, b: CoinBook, bar: Candle, emit: bool) -> None:
+        if b.candles_15m and bar.ts <= b.candles_15m[-1].ts:
             return
-        self.candles_15m.append(bar)
+        b.candles_15m.append(bar)
         if emit:
-            self.queue.put_nowait(("candle_15m_closed", bar))
+            self.queue.put_nowait(("candle_15m_closed", (coin, bar)))
 
     async def _finalizer(self) -> None:
-        """Close out live bars on dead-tape minutes (no rollover message arrives)."""
         while not self._stop.is_set():
             await asyncio.sleep(1)
             t = now_ms()
-            live = self._live_1m
-            if live is not None and t > live.ts + ONE_MIN_MS + CANDLE_GRACE_MS:
-                self._live_1m = None
-                self._finalize_1m(live)
-            live15 = self._live_15m
-            if live15 is not None and t > live15.ts + FIFTEEN_MIN_MS + CANDLE_GRACE_MS:
-                self._live_15m = None
-                self._append_15m(live15, emit=True)
+            for coin, b in self.books.items():
+                if b.live_1m is not None and t > b.live_1m.ts + ONE_MIN_MS + CANDLE_GRACE_MS:
+                    live, b.live_1m = b.live_1m, None
+                    self._finalize_1m(coin, b, live)
+                if b.live_15m is not None and t > b.live_15m.ts + FIFTEEN_MIN_MS + CANDLE_GRACE_MS:
+                    live15, b.live_15m = b.live_15m, None
+                    self._append_15m(coin, b, live15, emit=True)
 
     # -- funding / OI poll ------------------------------------------------------------
     async def _funding_poll(self) -> None:
         while not self._stop.is_set():
             try:
                 meta, ctxs = await asyncio.to_thread(self._rest.meta_and_asset_ctxs)
-                if self._btc_asset_idx is None:
-                    self._btc_asset_idx = next(i for i, a in enumerate(meta["universe"]) if a["name"] == self.coin)
-                ctx = ctxs[self._btc_asset_idx]
-                self.current_funding_hourly = float(ctx["funding"])
-                self.open_interest = float(ctx["openInterest"])
+                for coin, b in self.books.items():
+                    if b.asset_idx is None:
+                        b.asset_idx = next((i for i, a in enumerate(meta["universe"])
+                                            if a["name"] == coin), None)
+                    if b.asset_idx is not None:
+                        ctx = ctxs[b.asset_idx]
+                        b.funding_hourly = float(ctx["funding"])
+                        b.open_interest = float(ctx["openInterest"])
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 log.warning("funding poll failed: %s", e)
             await asyncio.sleep(60)
 
@@ -316,5 +355,5 @@ class Feed:
         if self.db is not None:
             try:
                 await self.db.log_event(level, msg)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 log.exception("event log failed")

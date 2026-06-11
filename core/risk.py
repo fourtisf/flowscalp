@@ -55,7 +55,7 @@ def position_size(equity: float, entry: float, sl: float, s, sz_decimals: int) -
 
 
 def can_enter(state, s, now_utc: datetime, bar_ts: Optional[int] = None,
-              sig: Optional[Signal] = None) -> tuple[bool, str]:
+              sig: Optional[Signal] = None, coin: str = "") -> tuple[bool, str]:
     """Engine-level gates, checked in order. `state` is the shared BotState.
     With `sig` supplied, additionally enforces the swept-level dedupe."""
     if state.bot_state != "RUNNING":
@@ -82,7 +82,9 @@ def can_enter(state, s, now_utc: datetime, bar_ts: Optional[int] = None,
         if bars_since < POST_EXIT_BAR_SPACING:
             return False, f"post-exit spacing ({bars_since} bars)"
 
-    if sig is not None and state.last_swept_level.get(sig.side) == sig.swept_level:
-        return False, f"same swept level {sig.swept_level:.0f} ({sig.side})"
+    if sig is not None:
+        key = f"{coin}:{sig.side}" if coin else sig.side
+        if state.last_swept_level.get(key) == sig.swept_level:
+            return False, f"same swept level {sig.swept_level:.0f} ({key})"
 
     return True, ""

@@ -66,6 +66,7 @@ class Position:
     exit_tx: str = ""
     entry_tx_crossed: bool = False  # our order was the taker in that tx
     exit_tx_crossed: bool = False
+    coin: str = "BTC"          # symbol this position belongs to
 
 
 def utc_day(ts_ms: Optional[int] = None) -> str:

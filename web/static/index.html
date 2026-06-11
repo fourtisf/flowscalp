@@ -212,7 +212,7 @@
     <div style="overflow-x:auto">
       <table>
         <thead><tr>
-          <th>waktu</th><th>arah</th><th>entry</th><th>exit</th>
+          <th>waktu</th><th>coin</th><th>arah</th><th>entry</th><th>exit</th>
           <th>R</th><th>PnL $</th><th>fee</th><th>alasan</th>
         </tr></thead>
         <tbody id="trades"></tbody>
@@ -274,8 +274,9 @@ async function refresh(){
     sb.className="pill state"+(["STOPPED","HALTED_DAILY"].includes(st.state)?" bad":
                                ["PAUSED","COOLDOWN","RECONCILE"].includes(st.state)?" warn":"");
     setv("equity",usd(st.equity));
-    setv("mid",px(st.mid));
-    setv("coinlbl",st.coin||"BTC");
+    const mids=st.mids&&Object.keys(st.mids).length?st.mids:{[st.coin||"BTC"]:st.mid};
+    $("coinlbl").textContent="";
+    setv("mid",Object.entries(mids).map(([c,m])=>c+" "+px(m)).join(" · "));
     setv("uptime","up "+Math.floor(st.uptime_min/60)+"j "+(st.uptime_min%60)+"m");
     $("clock").textContent=new Date().toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"});
     cls(setv("daypnl",usd(st.day_pnl_usd,true)),st.day_pnl_usd);
@@ -297,7 +298,7 @@ async function refresh(){
 
     const p=st.open_position;
     $("poscard").innerHTML=!p?'<div class="emptybox"><span class="ico">📡</span>flat — bot sedang menunggu setup yang lolos semua filter</div>':
-      `<div class="kv"><span class="k">arah / ukuran</span><span class="v"><span class="side ${p.side}">${p.side.toUpperCase()}</span>&nbsp; ${p.size_btc.toFixed(4)} BTC</span></div>`+
+      `<div class="kv"><span class="k">arah / ukuran</span><span class="v"><span class="side ${p.side}">${p.side.toUpperCase()}</span>&nbsp; ${p.size_btc.toFixed(4)} ${p.coin||""}</span></div>`+
       `<div class="kv"><span class="k">entry</span><span class="v">${px(p.entry_px)}</span></div>`+
       `<div class="kv"><span class="k">stop loss / take profit</span><span class="v">${px(p.sl_px)} / ${px(p.tp_px)}</span></div>`+
       `<div class="kv"><span class="k">uPnL</span><span class="v ${p.upnl_usd>=0?"pos":"neg"}">${usd(p.upnl_usd,true)}</span></div>`+
@@ -314,6 +315,7 @@ async function refresh(){
       const d=new Date(t.ts_close).toLocaleString("id-ID",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
       const rc=t.r_multiple>=0?"pos":"neg";
       return `<tr><td class="mut">${d}</td>`+
+        `<td class="mut">${t.coin||""}</td>`+
         `<td><span class="side ${t.side}">${t.side.toUpperCase()}</span></td>`+
         `<td>${px(t.entry_px)}</td><td>${px(t.exit_px)}</td>`+
         `<td class="${rc}">${t.r_multiple>=0?"+":""}${t.r_multiple.toFixed(2)}</td>`+

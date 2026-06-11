@@ -55,6 +55,7 @@ class Fill:
     reason: str = ""
     tx_hash: str = ""  # HyperCore L1 hash (live fills) — public proof
     crossed: bool = False  # True = our order was the taker (hash is OUR action)
+    coin: str = ""
 
 
 class ExecError(Exception):
@@ -93,6 +94,7 @@ class _PendingEntry:
     side: str       # long | short
     px: float
     sz: float
+    coin: str = ""
 
 
 class PaperExecutor:
@@ -112,10 +114,12 @@ class PaperExecutor:
                  on_fill: Callable[[Fill], Awaitable[None]]):
         self.env = env
         self.coin = getattr(env, "coin", "BTC")
+        self.coins: tuple = tuple(getattr(env, "coins", None) or (self.coin,))
         self.db = db
         self.mid = mid_provider
         self.on_fill = on_fill
         self.sz_decimals = 5
+        self._szd: dict = {c: 5 for c in self.coins}
         self.maker_fee = FALLBACK_MAKER_FEE
         self.taker_fee = FALLBACK_TAKER_FEE
         self._equity = env.paper_start_equity
@@ -151,10 +155,21 @@ class PaperExecutor:
         self.maker_fee = float(fees["userAddRate"])
         self.taker_fee = float(fees["userCrossRate"])
         meta = await asyncio.to_thread(info.meta)
-        btc = next(a for a in meta["universe"] if a["name"] == self.coin)
-        self.sz_decimals = int(btc["szDecimals"])
+        for a in meta["universe"]:
+            if a["name"] in self._szd:
+                self._szd[a["name"]] = int(a["szDecimals"])
+        self.sz_decimals = self._szd.get(self.coin, 5)
         log.info("paper: live rates maker %.4f%% taker %.4f%%, szDecimals %d",
                  self.maker_fee * 100, self.taker_fee * 100, self.sz_decimals)
+
+    def sz_dec(self, coin: str) -> int:
+        return self._szd.get(coin, self.sz_decimals)
+
+    def _mid(self, coin: str) -> float:
+        try:
+            return self.mid(coin)
+        except TypeError:           # legacy no-arg provider (tests)
+            return self.mid()
 
     async def equity(self) -> float:
         return self._equity
@@ -163,22 +178,25 @@ class PaperExecutor:
         self._equity += pnl_usd
         await self.db.set_setting(PAPER_EQUITY_KEY, repr(self._equity))
 
-    async def place_entry(self, sig: Signal, size: SizeResult) -> str:
+    async def place_entry(self, sig: Signal, size: SizeResult, coin: str = "") -> str:
         oid = self._next_oid()
-        self._pending = _PendingEntry(oid, sig.side, sig.entry_px, size.size_btc)
+        self._pending = _PendingEntry(oid, sig.side, sig.entry_px, size.size_btc,
+                                      coin or self.coin)
         return oid
 
     async def cancel_entry(self, oid: str) -> None:
         if self._pending and self._pending.oid == oid:
             self._pending = None
 
-    async def taker_entry(self, sig: Signal, sz: float) -> None:
+    async def taker_entry(self, sig: Signal, sz: float, coin: str = "") -> None:
         """IOC fallback after maker timeout: fill at mid with 1bp adverse slip."""
-        mid = self.mid() or sig.entry_px
+        coin = coin or self.coin
+        mid = self._mid(coin) or sig.entry_px
         px = mid * (1 + TAKER_SLIP) if sig.side == "long" else mid * (1 - TAKER_SLIP)
         oid = self._next_oid()
         await self.on_fill(Fill(oid, px, sz, "B" if sig.side == "long" else "A",
-                                now_ms(), px * sz * self.taker_fee, kind="taker_entry"))
+                                now_ms(), px * sz * self.taker_fee, kind="taker_entry",
+                                coin=coin))
 
     async def arm_exits(self, pos: Position) -> None:
         if "tp" not in pos.oids:
@@ -196,47 +214,48 @@ class PaperExecutor:
     def disarm(self) -> None:
         self._armed = None
 
-    async def flatten(self, reason: str) -> None:
+    async def flatten(self, reason: str, coin: str = "") -> None:
         pos = self._armed
         if pos is None:
             return
         remaining = pos.filled_sz - pos.exit_sz
         if remaining <= 0:
             return
-        mid = self.mid() or pos.entry_px
+        mid = self._mid(pos.coin or coin or self.coin) or pos.entry_px
         px = mid * (1 - TAKER_SLIP) if pos.side == "long" else mid * (1 + TAKER_SLIP)
         self._armed = None
         await self.on_fill(Fill(self._next_oid(), px, remaining,
                                 "A" if pos.side == "long" else "B",
                                 now_ms(), px * remaining * self.taker_fee,
-                                kind="flatten", reason=reason))
+                                kind="flatten", reason=reason, coin=pos.coin))
 
     # -- simulation drivers (called by the engine) ------------------------------
-    async def on_mid(self, mid: float) -> None:
+    async def on_mid(self, mid: float, coin: str = "") -> None:
         p = self._pending
-        if p is None:
+        if p is None or (coin and p.coin and p.coin != coin):
             return
         if (p.side == "long" and mid < p.px) or (p.side == "short" and mid > p.px):
             await self._fill_entry(p, now_ms())
 
-    async def on_bar_closed(self, bar: Candle) -> None:
+    async def on_bar_closed(self, bar: Candle, coin: str = "") -> None:
         # the engine drives bars through here BEFORE evaluating/placing entries,
         # so a pending entry is only ever tested against bars after its signal bar
         p = self._pending
-        if p is not None:
+        if p is not None and not (coin and p.coin and p.coin != coin):
             traded_through = bar.low < p.px if p.side == "long" else bar.high > p.px
             if traded_through:
                 await self._fill_entry(p, bar.ts + 60_000)
-        await self._check_exits(bar)
+        await self._check_exits(bar, coin)
 
     async def _fill_entry(self, p: _PendingEntry, ts: int) -> None:
         self._pending = None
         await self.on_fill(Fill(p.oid, p.px, p.sz, "B" if p.side == "long" else "A",
-                                ts, p.px * p.sz * self.maker_fee, kind="entry"))
+                                ts, p.px * p.sz * self.maker_fee, kind="entry",
+                                coin=p.coin))
 
-    async def _check_exits(self, bar: Candle) -> None:
+    async def _check_exits(self, bar: Candle, coin: str = "") -> None:
         pos = self._armed
-        if pos is None:
+        if pos is None or (coin and pos.coin and pos.coin != coin):
             return
         remaining = pos.filled_sz - pos.exit_sz
         if remaining <= 0:
@@ -250,12 +269,14 @@ class PaperExecutor:
             self._armed = None
             await self.on_fill(Fill(pos.oids["sl"], pos.sl_px, remaining,
                                     "A" if pos.side == "long" else "B",
-                                    ts, pos.sl_px * remaining * self.taker_fee, kind="sl"))
+                                    ts, pos.sl_px * remaining * self.taker_fee, kind="sl",
+                                    coin=pos.coin))
         elif tp_hit:
             self._armed = None
             await self.on_fill(Fill(pos.oids["tp"], pos.tp_px, remaining,
                                     "A" if pos.side == "long" else "B",
-                                    ts, pos.tp_px * remaining * self.maker_fee, kind="tp"))
+                                    ts, pos.tp_px * remaining * self.maker_fee, kind="tp",
+                                    coin=pos.coin))
 
 
 # =============================================================================
@@ -267,13 +288,24 @@ class LiveExecutor:
     def __init__(self, env, db, mid_provider: Callable[[], float]):
         self.env = env
         self.coin = getattr(env, "coin", "BTC")
+        self.coins: tuple = tuple(getattr(env, "coins", None) or (self.coin,))
         self.db = db
         self.mid = mid_provider
         self.sz_decimals = 5
+        self._szd: dict = {c: 5 for c in self.coins}
         self.maker_fee = FALLBACK_MAKER_FEE
         self.taker_fee = FALLBACK_TAKER_FEE
         self._info = None
         self._exchange = None
+
+    def sz_dec(self, coin: str) -> int:
+        return self._szd.get(coin, self.sz_decimals)
+
+    def _mid(self, coin: str) -> float:
+        try:
+            return self.mid(coin)
+        except TypeError:
+            return self.mid()
 
     # -- plumbing -----------------------------------------------------------------
     async def _retry(self, label: str, fn, *args, **kw):
@@ -323,8 +355,10 @@ class LiveExecutor:
             self.env.hl_main_wallet_address or None,           # account_address → master
         )
         meta = await self._retry("meta", self._info.meta)
-        btc = next(a for a in meta["universe"] if a["name"] == self.coin)
-        self.sz_decimals = int(btc["szDecimals"])
+        for a in meta["universe"]:
+            if a["name"] in self._szd:
+                self._szd[a["name"]] = int(a["szDecimals"])
+        self.sz_decimals = self._szd.get(self.coin, 5)
         fees = await self._retry("user_fees", self._info.user_fees, self.env.trading_address)
         self.maker_fee = float(fees["userAddRate"])
         self.taker_fee = float(fees["userCrossRate"])
@@ -333,17 +367,18 @@ class LiveExecutor:
                  self.env.trading_address[:10],
                  " (subaccount)" if self.env.hl_subaccount_address else "")
 
-    async def reconcile_raw(self) -> tuple[float, float, list]:
-        """Returns (position szi, entry px, open orders) from the exchange."""
+    async def reconcile_raw(self, coin: str = "") -> tuple[float, float, list]:
+        """Returns (position szi, entry px, open orders) for one coin."""
+        coin = coin or self.coin
         st = await self._retry("user_state", self._info.user_state, self.env.trading_address)
         szi, entry_px = 0.0, 0.0
         for ap in st.get("assetPositions", []):
             p = ap["position"]
-            if p["coin"] == self.coin and float(p["szi"]) != 0:
+            if p["coin"] == coin and float(p["szi"]) != 0:
                 szi = float(p["szi"])
                 entry_px = float(p["entryPx"] or 0)
         orders = await self._retry("open_orders", self._info.open_orders, self.env.trading_address)
-        return szi, entry_px, [o for o in orders if o["coin"] == self.coin]
+        return szi, entry_px, [o for o in orders if o["coin"] == coin]
 
     async def equity(self) -> float:
         st = await self._retry("user_state", self._info.user_state, self.env.trading_address)
@@ -361,87 +396,95 @@ class LiveExecutor:
     async def apply_realized(self, pnl_usd: float) -> None:
         pass  # live equity comes from the exchange
 
-    async def place_entry(self, sig: Signal, size: SizeResult) -> str:
-        px = round_px(sig.entry_px, self.sz_decimals)
+    async def place_entry(self, sig: Signal, size: SizeResult, coin: str = "") -> str:
+        coin = coin or self.coin
+        px = round_px(sig.entry_px, self.sz_dec(coin))
         resp = await self._retry(
-            "place_entry", self._exchange.order, self.coin, sig.side == "long",
+            "place_entry", self._exchange.order, coin, sig.side == "long",
             size.size_btc, px, {"limit": {"tif": "Alo"}}, False)
         oid, _ = self._oid_from_response(resp)
         return oid
 
-    async def cancel_entry(self, oid: str) -> None:
+    async def cancel_entry(self, oid: str, coin: str = "") -> None:
         try:
-            await self._retry("cancel", self._exchange.cancel, self.coin, int(oid))
+            await self._retry("cancel", self._exchange.cancel, coin or self.coin, int(oid))
         except ExecError as e:
             log.info("cancel_entry %s: %s (likely already filled/canceled)", oid, e)
 
-    async def taker_entry(self, sig: Signal, sz: float) -> None:
+    async def taker_entry(self, sig: Signal, sz: float, coin: str = "") -> None:
         """IOC limit at mid ± 0.1% bound. Fill arrives via the userFills stream."""
-        mid = self.mid()
+        coin = coin or self.coin
+        mid = self._mid(coin)
         if not mid:
             raise ExecError("no mid for taker entry")
         bound = mid * (1 + TAKER_ENTRY_BOUND) if sig.side == "long" else mid * (1 - TAKER_ENTRY_BOUND)
         resp = await self._retry(
-            "taker_entry", self._exchange.order, self.coin, sig.side == "long",
-            sz, round_px(bound, self.sz_decimals), {"limit": {"tif": "Ioc"}}, False)
+            "taker_entry", self._exchange.order, coin, sig.side == "long",
+            sz, round_px(bound, self.sz_dec(coin)), {"limit": {"tif": "Ioc"}}, False)
         self._oid_from_response(resp)
 
     async def arm_exits(self, pos: Position) -> None:
+        coin = pos.coin or self.coin
+        dec = self.sz_dec(coin)
         is_buy_exit = pos.side == "short"
         sz = pos.filled_sz or pos.size_btc
-        tp_px = round_px(pos.tp_px, self.sz_decimals)
+        tp_px = round_px(pos.tp_px, dec)
         resp = await self._retry(
-            "arm_tp", self._exchange.order, self.coin, is_buy_exit, sz, tp_px,
+            "arm_tp", self._exchange.order, coin, is_buy_exit, sz, tp_px,
             {"limit": {"tif": "Gtc"}}, True)
         pos.oids["tp"], _ = self._oid_from_response(resp)
 
-        sl_px = round_px(pos.sl_px, self.sz_decimals)
+        sl_px = round_px(pos.sl_px, dec)
         guard = sl_px * (1 + SL_TRIGGER_BOUND) if is_buy_exit else sl_px * (1 - SL_TRIGGER_BOUND)
         resp = await self._retry(
-            "arm_sl", self._exchange.order, self.coin, is_buy_exit, sz,
-            round_px(guard, self.sz_decimals),
+            "arm_sl", self._exchange.order, coin, is_buy_exit, sz,
+            round_px(guard, dec),
             {"trigger": {"triggerPx": sl_px, "isMarket": True, "tpsl": "sl"}}, True)
         pos.oids["sl"], _ = self._oid_from_response(resp)
         await self.db.log_event("INFO", f"exits armed tp {tp_px} (oid {pos.oids['tp']})"
                                         f" sl {sl_px} (oid {pos.oids['sl']})")
 
     async def cancel_all(self) -> None:
-        _, _, orders = await self.reconcile_raw()
-        if orders:
-            cancels = [{"coin": self.coin, "oid": o["oid"]} for o in orders]
+        all_orders = await self._retry("open_orders", self._info.open_orders,
+                                       self.env.trading_address)
+        cancels = [{"coin": o["coin"], "oid": o["oid"]}
+                   for o in all_orders if o["coin"] in self.coins]
+        if cancels:
             await self._retry("cancel_all", self._exchange.bulk_cancel, cancels)
 
     async def move_tp(self, pos: Position, new_px: float) -> None:
         """Re-point the reduce-only TP limit (eco close pulls it to mid)."""
+        coin = pos.coin or self.coin
         old = pos.oids.get("tp")
         if old:
-            await self.cancel_entry(old)
+            await self.cancel_entry(old, coin)
         is_buy_exit = pos.side == "short"
         sz = pos.filled_sz - pos.exit_sz
         resp = await self._retry(
-            "move_tp", self._exchange.order, self.coin, is_buy_exit, sz,
-            round_px(new_px, self.sz_decimals), {"limit": {"tif": "Gtc"}}, True)
+            "move_tp", self._exchange.order, coin, is_buy_exit, sz,
+            round_px(new_px, self.sz_dec(coin)), {"limit": {"tif": "Gtc"}}, True)
         pos.oids["tp"], _ = self._oid_from_response(resp)
 
-    async def flatten(self, reason: str) -> None:
+    async def flatten(self, reason: str, coin: str = "") -> None:
         """Cancel all, then IOC reduce-only at mid ± 0.2%; retry once on partial."""
+        coin = coin or self.coin
         await self.cancel_all()
         for _ in range(2):
-            szi, _, _ = await self.reconcile_raw()
+            szi, _, _ = await self.reconcile_raw(coin)
             if szi == 0:
                 return
             is_buy = szi < 0
-            mid = self.mid()
+            mid = self._mid(coin)
             if not mid:
                 st = await self._retry("all_mids", self._info.all_mids)
-                mid = float(st[self.coin])
+                mid = float(st[coin])
             bound = mid * (1 + FLATTEN_BOUND) if is_buy else mid * (1 - FLATTEN_BOUND)
             resp = await self._retry(
-                "flatten", self._exchange.order, self.coin, is_buy, abs(szi),
-                round_px(bound, self.sz_decimals), {"limit": {"tif": "Ioc"}}, True)
+                "flatten", self._exchange.order, coin, is_buy, abs(szi),
+                round_px(bound, self.sz_dec(coin)), {"limit": {"tif": "Ioc"}}, True)
             if resp.get("status") != "ok":
                 await self.db.log_event("ERROR", f"flatten attempt failed: {resp}")
-        szi, _, _ = await self.reconcile_raw()
+        szi, _, _ = await self.reconcile_raw(coin)
         if szi != 0:
             await self.db.log_event("ERROR", f"flatten incomplete, szi={szi}")
             raise ExecError(f"flatten incomplete, szi={szi}")
@@ -452,4 +495,5 @@ class LiveExecutor:
                     side=raw["side"], time=int(raw["time"]),
                     fee_usd=float(raw.get("fee", 0) or 0),
                     tx_hash=str(raw.get("hash", "") or ""),
-                    crossed=bool(raw.get("crossed", False)))
+                    crossed=bool(raw.get("crossed", False)),
+                    coin=str(raw.get("coin", "") or ""))

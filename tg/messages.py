@@ -89,7 +89,8 @@ def status_text(st, settings, equity: float, upnl: Optional[float], mid: float,
     ]
     pos = st.position
     if pos is not None and pos.ts_open:
-        lines.append(f"open {pos.side.upper()} {pos.filled_sz:.4f} BTC @ {fmt_px(pos.entry_px)}"
+        lines.append(f"open {pos.side.upper()} {pos.filled_sz:.4f}"
+                     f" {getattr(pos, 'coin', 'BTC') or 'BTC'} @ {fmt_px(pos.entry_px)}"
                      f" | sl {fmt_px(pos.sl_px)} tp {fmt_px(pos.tp_px)}"
                      f" | uPnL {fmt_usd(upnl or 0, signed=True)}")
     elif st.pos_state.value == "PENDING_ENTRY":
@@ -116,7 +117,8 @@ def pnl_text(period: str, mode: str, s: dict) -> str:
 def position_text(pos, upnl: float, minutes: int) -> str:
     if pos is None or not pos.ts_open:
         return "no open position"
-    return (f"{pos.side.upper()} {pos.filled_sz:.5f} BTC @ {fmt_px(pos.entry_px)}\n"
+    c = getattr(pos, "coin", "BTC") or "BTC"
+    return (f"{pos.side.upper()} {pos.filled_sz:.5f} {c} @ {fmt_px(pos.entry_px)}\n"
             f"sl {fmt_px(pos.sl_px)} | tp {fmt_px(pos.tp_px)}"
             f" | uPnL {fmt_usd(upnl, signed=True)} | {minutes}m in trade")
 

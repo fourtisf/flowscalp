@@ -74,10 +74,17 @@ class Engine:
         await self.db.log_event("INFO", f"engine boot complete: {st.bot_state.value} ({st.mode})")
 
     async def _reconcile_boot(self) -> None:
-        """Live boot: compare exchange position against the snapshot position."""
+        """Live boot: compare exchange positions (all coins) vs the snapshot."""
         st = self.state
-        szi, ex_entry, orders = await self.executor.reconcile_raw()
-        pos = st.position
+        for coin in getattr(self.executor, "coins", (self._primary(),)):
+            await self._reconcile_boot_coin(coin)
+        if st.position is None and st.pos_state != Pos.FLAT:
+            st.set_pos_state(Pos.FLAT)
+
+    async def _reconcile_boot_coin(self, coin: str) -> None:
+        st = self.state
+        szi, ex_entry, orders = await self.executor.reconcile_raw(coin)
+        pos = st.position if (st.position and (st.position.coin or self._primary()) == coin) else None
         if szi != 0:
             side = "long" if szi > 0 else "short"
             if pos is not None and pos.side == side and abs(abs(szi) - pos.filled_sz) <= 2 * self._sz_eps:
@@ -86,16 +93,17 @@ class Engine:
                 pos.oids = {k: v for k, v in pos.oids.items() if k == "entry"}
                 await self.executor.arm_exits(pos)
                 st.pos_state = Pos.IN_POSITION
-                await self._notify(f"♻️ reconciled: adopted open {side.upper()} {abs(szi):.4f} BTC,"
+                await self._notify(f"♻️ reconciled: adopted open {side.upper()} {abs(szi):.4f} {coin},"
                                    f" exits re-armed (sl {messages.fmt_px(pos.sl_px)},"
                                    f" tp {messages.fmt_px(pos.tp_px)})")
             else:
-                await self._notify(f"⚠️ reconcile: unknown {side.upper()} {abs(szi):.4f} BTC"
+                await self._notify(f"⚠️ reconcile: unknown {side.upper()} {abs(szi):.4f} {coin}"
                                    f" @ {messages.fmt_px(ex_entry)} on exchange — flattening for safety")
-                st.position = None
-                st.set_pos_state(Pos.FLAT)
-                await self.executor.flatten("manual")
-                await self.db.log_event("WARN", f"boot reconcile flattened unknown position szi={szi}")
+                if pos is not None:
+                    st.position = None
+                    st.set_pos_state(Pos.FLAT)
+                await self.executor.flatten("manual", coin=coin)
+                await self.db.log_event("WARN", f"boot reconcile flattened unknown {coin} szi={szi}")
         else:
             if pos is not None:
                 # we thought we had a position; it closed while we were down
@@ -103,17 +111,15 @@ class Engine:
             elif orders:
                 await self.executor.cancel_all()
                 await self.db.log_event("WARN", f"boot reconcile canceled {len(orders)} orphan orders")
-            st.position = None
-            st.set_pos_state(Pos.FLAT)
 
     async def _close_unseen_exit(self, pos: Position) -> None:
         """Position closed while the bot was down: recover exit details
         (best effort from recent fills, else current mid) and book the trade."""
-        exit_px, reason = self.feed.mid or pos.entry_px, "manual"
+        exit_px, reason = self._mid_of(pos.coin or self._primary()) or pos.entry_px, "manual"
         fees = 0.0
         try:
             raw = await asyncio.to_thread(self.executor._info.user_fills, self.env.trading_address)
-            closes = [f for f in raw if f.get("coin") == getattr(self.env, "coin", "BTC") and int(f["time"]) >= pos.ts_open
+            closes = [f for f in raw if f.get("coin") == (pos.coin or self._primary()) and int(f["time"]) >= pos.ts_open
                       and str(f.get("oid")) != pos.oids.get("entry")]
             if closes:
                 sz = sum(float(f["sz"]) for f in closes)
@@ -146,11 +152,32 @@ class Engine:
                 except Exception:  # noqa: BLE001
                     pass
 
+    def _primary(self) -> str:
+        return getattr(self.feed, "primary", getattr(self.env, "coin", "BTC"))
+
+    def _book(self, coin: str):
+        if hasattr(self.feed, "book") and hasattr(self.feed, "books"):
+            return self.feed.book(coin)
+        return self.feed  # legacy single-coin feed (tests)
+
+    def _mid_of(self, coin: str) -> float:
+        if hasattr(self.feed, "mid_of"):
+            return self.feed.mid_of(coin)
+        return getattr(self.feed, "mid", 0.0)
+
     async def _dispatch(self, kind: str, payload) -> None:
         if kind == "candle_1m_closed":
-            await self._on_bar(payload)
+            if isinstance(payload, tuple):
+                coin, bar = payload
+            else:
+                coin, bar = self._primary(), payload
+            await self._on_bar(coin, bar)
         elif kind == "mid":
-            await self._on_mid(payload)
+            if isinstance(payload, tuple):
+                coin, px = payload
+            else:
+                coin, px = self._primary(), payload
+            await self._on_mid(coin, px)
         elif kind == "fill":
             if self.executor is not None and self.executor.name == "live":
                 await self.handle_fill(self.executor.to_fill(payload))
@@ -210,7 +237,7 @@ class Engine:
         if pos is not None and pos.filled_sz - pos.exit_sz > self._sz_eps:
             pos.pending_exit_reason = "kill"
             st.set_pos_state(Pos.EXITING)
-            await self.executor.flatten("kill")
+            await self.executor.flatten("kill", coin=pos.coin or self._primary())
         elif pos is not None:
             st.position = None
             st.set_pos_state(Pos.FLAT)
@@ -274,15 +301,25 @@ class Engine:
         from core import timewin
         st = self.state
         s = self.store.current
-        c1m = list(self.feed.candles_1m)
-        c15 = list(self.feed.candles_15m)
-        deltas = list(self.feed.deltas_1m)
+        books = getattr(self.feed, "books", None) or {self._primary(): self.feed}
         lines = [f"🔎 KENAPA BELUM ENTRY — kondisi sekarang",
                  f"state {st.bot_state.value} | posisi {st.pos_state.value} | mode {st.mode}"]
+        for _coin, _bk in books.items():
+            lines.append("")
+            lines.append(f"— {_coin} —")
+            lines.extend(self._why_coin(_bk, s))
+        return "\n".join(lines)
+
+    def _why_coin(self, bk, s) -> list:
+        from core import strategy as stg
+        c1m = list(bk.candles_1m)
+        c15 = list(bk.candles_15m)
+        deltas = list(bk.deltas_1m)
+        lines = []
         need = max(s.sweep_lookback + 3, 60)
         if len(c1m) < need or len(c15) < 210:
             lines.append(f"❌ data: {len(c1m)} bar 1m (butuh {need}), {len(c15)} bar 15m (butuh 210)")
-            return "\n".join(lines)
+            return lines
         last, prev = c1m[-1], c1m[-2]
 
         sess = stg.session_ok(last.ts + 60_000, s)
@@ -319,7 +356,7 @@ class Engine:
             nones = sum(1 for x in tail if x is None)
             lines.append("✅ filter CVD: siap" if nones == 0 and len(tail) >= k
                          else f"⏳ filter CVD: warm-up, ±{max(nones, k - len(tail))} menit lagi")
-        return "\n".join(lines)
+        return lines
 
     async def _cmd_closepos(self) -> str:
         """Manual close from the owner: cancel a pending entry or flatten."""
@@ -335,7 +372,7 @@ class Engine:
         if st.pos_state in (Pos.IN_POSITION, Pos.EXITING):
             pos.pending_exit_reason = "manual"
             st.set_pos_state(Pos.EXITING)
-            await self.executor.flatten("manual")
+            await self.executor.flatten("manual", coin=pos.coin or self._primary())
             return "posisi ditutup di harga pasar ✅"
         return f"tidak bisa: {st.pos_state.value}"
 
@@ -346,7 +383,7 @@ class Engine:
         pos = st.position
         if pos is None or st.pos_state != Pos.IN_POSITION:
             return "tidak ada posisi terbuka (atau entry masih pending)"
-        mid = self.feed.mid
+        mid = self._mid_of(pos.coin or self._primary())
         if not mid:
             return "harga belum tersedia"
         pos.tp_is_manual = True
@@ -367,7 +404,7 @@ class Engine:
             return f"tidak bisa sekarang: state {st.bot_state.value}/{st.pos_state.value}"
         if st.mode == "live" and not live_ok:
             return "trade uji di akun REAL butuh konfirmasi — kirim /testtrade lalu tekan tombolnya"
-        mid = self.feed.mid
+        mid = self._mid_of(self._primary())
         if not mid:
             return "harga belum tersedia — feed masih menyambung"
         s = self.store.current
@@ -382,7 +419,7 @@ class Engine:
                          reason="TEST TRADE REAL — ukuran minimal, bukan sinyal strategi")
             eq = await self.executor.equity()
             override = risk.SizeResult(True, sz, sz * entry, (sz * entry) / max(eq, 1.0), False)
-            await self._place_entry(sig, s, now_ms(), size_override=override)
+            await self._place_entry(sig, s, now_ms(), size_override=override, coin=self._primary())
             if st.pos_state == Pos.PENDING_ENTRY:
                 return (f"🔴 test trade REAL dipasang: LONG {sz} BTC (≈${sz * entry:,.2f})"
                         f" @ ~{entry:,.0f}.\n"
@@ -395,7 +432,7 @@ class Engine:
         sl = entry * 0.997            # 0.3% test stop
         sig = Signal("long", entry, sl, entry + s.tp_r * (entry - sl),
                      swept_level=round(mid), reason="TEST TRADE manual — bukan sinyal strategi")
-        await self._place_entry(sig, s, now_ms())
+        await self._place_entry(sig, s, now_ms(), coin=self._primary())
         if st.pos_state == Pos.PENDING_ENTRY:
             return (f"🧪 test trade dipasang: LONG @ ~{entry:,.0f} (paper).\n"
                     f"fill maker biasanya beberapa detik; SL/TP/time-stop berjalan normal —"
@@ -407,13 +444,13 @@ class Engine:
         return "report posted"
 
     # ------------------------------------------------------------------ market events
-    async def _on_bar(self, bar) -> None:
+    async def _on_bar(self, coin: str, bar) -> None:
         st = self.state
         st.last_tick_ts = self.feed.last_tick_ts
         if self.executor is None:
             return
         if self.executor.name == "paper":
-            await self.executor.on_bar_closed(bar)
+            await self.executor.on_bar_closed(bar, coin)
         # housekeeping rides event time (bar close); in live operation this is
         # wall clock anyway, and it keeps replays/backtests deterministic
         await self._housekeeping(bar.ts + 60_000)
@@ -423,53 +460,60 @@ class Engine:
         close_dt = datetime.fromtimestamp((bar.ts + 60_000) / 1000, tz=timezone.utc)
         ok, why = risk.can_enter(st, s, close_dt, bar_ts=bar.ts)
         if not ok:
-            log.debug("no entry: %s", why)
+            log.debug("no entry (%s): %s", coin, why)
             return
-        res = evaluate_ex(list(self.feed.candles_1m), list(self.feed.candles_15m),
-                          list(self.feed.deltas_1m), s, self.feed.current_funding_hourly)
+        bk = self._book(coin)
+        funding = getattr(bk, "funding_hourly", None)
+        if funding is None:
+            funding = getattr(bk, "current_funding_hourly", None)
+        res = evaluate_ex(list(bk.candles_1m), list(bk.candles_15m),
+                          list(bk.deltas_1m), s, funding)
         if res.skip_gate is not None:
-            await self.db.log_event("INFO", f"gate skip [{res.skip_gate}] {res.detail}")
+            await self.db.log_event("INFO", f"gate skip {coin} [{res.skip_gate}] {res.detail}")
             return
         sig = res.signal
         if sig is None:
             return
-        ok, why = risk.can_enter(st, s, close_dt, bar_ts=bar.ts, sig=sig)
+        ok, why = risk.can_enter(st, s, close_dt, bar_ts=bar.ts, sig=sig, coin=coin)
         if not ok:
-            await self.db.log_event("INFO", f"entry blocked: {why}")
+            await self.db.log_event("INFO", f"entry blocked {coin}: {why}")
             return
-        await self._place_entry(sig, s, bar.ts + 60_000)
+        await self._place_entry(sig, s, bar.ts + 60_000, coin=coin)
 
     async def _place_entry(self, sig: Signal, s: Settings, ts: int,
-                           size_override: Optional[risk.SizeResult] = None) -> None:
+                           size_override: Optional[risk.SizeResult] = None,
+                           coin: Optional[str] = None) -> None:
         st = self.state
+        coin = coin or self._primary()
         equity = await self.executor.equity()
-        size = size_override or risk.position_size(equity, sig.entry_px, sig.sl_px, s,
-                                                   self.executor.sz_decimals)
+        sz_dec = (self.executor.sz_dec(coin) if hasattr(self.executor, "sz_dec")
+                  else self.executor.sz_decimals)
+        size = size_override or risk.position_size(equity, sig.entry_px, sig.sl_px, s, sz_dec)
         if not size.ok:
             await self.db.log_event("INFO", f"size skip: {size.skip_reason}")
             return
         if size.lev_capped:
             await self.db.log_event("INFO",
                                     f"leverage capped at {s.leverage_cap}x — realized risk below {s.risk_pct}%")
-        oid = await self.executor.place_entry(sig, size)
+        oid = await self.executor.place_entry(sig, size, coin=coin)
         st.position = Position(side=sig.side, entry_px=sig.entry_px, size_btc=size.size_btc,
                                size_usd=size.size_usd, sl_px=sig.sl_px, tp_px=sig.tp_px,
                                swept_level=sig.swept_level, reason=sig.reason,
-                               oids={"entry": oid}, placed_ts=ts)
+                               oids={"entry": oid}, placed_ts=ts, coin=coin)
         st.set_pos_state(Pos.PENDING_ENTRY)
-        await self._notify(messages.entry_placed(sig.side, sig.entry_px, st.mode,
-                                                 getattr(self.env, 'coin', 'BTC')))
+        await self._notify(messages.entry_placed(sig.side, sig.entry_px, st.mode, coin))
 
-    async def _on_mid(self, mid: float) -> None:
+    async def _on_mid(self, coin: str, mid: float) -> None:
         st = self.state
         st.last_tick_ts = self.feed.last_tick_ts
         if self.executor is None:
             return
         if self.executor.name == "paper":
-            await self.executor.on_mid(mid)
+            await self.executor.on_mid(mid, coin)
             return
         pos = st.position
-        if pos is not None and st.pos_state == Pos.IN_POSITION and pos.sl_cross_ts == 0:
+        if (pos is not None and st.pos_state == Pos.IN_POSITION and pos.sl_cross_ts == 0
+                and (pos.coin or self._primary()) == coin):
             crossed = mid <= pos.sl_px if pos.side == "long" else mid >= pos.sl_px
             if crossed:
                 pos.sl_cross_ts = now_ms()
@@ -480,6 +524,9 @@ class Engine:
         pos = st.position
         if pos is None:
             await self.db.log_event("WARN", f"orphan fill oid={f.oid} px={f.px} sz={f.sz}")
+            return
+        if f.coin and pos.coin and f.coin != pos.coin:
+            await self.db.log_event("WARN", f"fill for {f.coin} but position is {pos.coin} — ignored")
             return
         entry_side = "B" if pos.side == "long" else "A"
         is_entry = (f.oid == pos.oids.get("entry") or f.kind in ("entry", "taker_entry")
@@ -515,11 +562,12 @@ class Engine:
         pos.trade_id = await self.db.insert_trade(
             mode=st.mode, side=pos.side, ts_open=ts, entry_px=pos.entry_px,
             size_btc=pos.filled_sz, size_usd=pos.size_usd, sl_px=pos.sl_px,
-            tp_px=pos.tp_px, fees_usd=pos.fees_usd, signal_reason=pos.reason)
+            tp_px=pos.tp_px, fees_usd=pos.fees_usd, signal_reason=pos.reason,
+            coin=pos.coin or self._primary())
         await self.executor.arm_exits(pos)
         st.set_pos_state(Pos.IN_POSITION)
         await self._notify(messages.entry_block(pos, st.mode, s.risk_pct, partial=partial,
-                                                coin=getattr(self.env, 'coin', 'BTC'))
+                                                coin=pos.coin or self._primary())
                            + messages.tx_proof(pos.entry_tx, pos.entry_tx_crossed,
                                                self.env.trading_address))
 
@@ -570,7 +618,7 @@ class Engine:
         st.day_trades += 1
         st.consec_losses = st.consec_losses + 1 if r < 0 else 0
         st.last_exit_bar_ts = ts // 60_000 * 60_000
-        st.last_swept_level[pos.side] = pos.swept_level
+        st.last_swept_level[f"{pos.coin or self._primary()}:{pos.side}"] = pos.swept_level
         minutes = max(0, (ts - pos.ts_open) // 60_000) if pos.ts_open else 0
         st.position = None
         st.set_pos_state(Pos.FLAT)
@@ -579,7 +627,7 @@ class Engine:
         await self.db.snapshot_equity(st.mode, equity, ts)
         await self._notify(messages.exit_block(pos.side, r, pnl, pos.entry_px, pos.exit_px,
                                                minutes, reason, st.day_realized_r, equity,
-                                               coin=getattr(self.env, 'coin', 'BTC'))
+                                               coin=pos.coin or self._primary())
                            + messages.tx_proof(pos.exit_tx, pos.exit_tx_crossed,
                                                self.env.trading_address))
         await self._circuit_breakers(s, equity)
@@ -654,7 +702,7 @@ class Engine:
                 and now - pos.ts_open >= s.time_stop_min * 60_000):
             pos.pending_exit_reason = "time_stop"
             st.set_pos_state(Pos.EXITING)
-            await self.executor.flatten("time_stop")
+            await self.executor.flatten("time_stop", coin=pos.coin or self._primary())
 
         pos = st.position
         # engine-side backup stop (live): trigger crossed ≥2s ago and no fill yet
@@ -663,7 +711,7 @@ class Engine:
             await self.db.log_event("WARN", "engine-side backup stop firing (trigger not filled in 2s)")
             pos.pending_exit_reason = "sl"
             st.set_pos_state(Pos.EXITING)
-            await self.executor.flatten("sl")
+            await self.executor.flatten("sl", coin=pos.coin or self._primary())
 
     async def _maker_timeout(self, pos: Position, s: Settings) -> None:
         st = self.state
@@ -705,23 +753,25 @@ class Engine:
     async def _reconcile_runtime(self) -> None:
         """Live drift check every 30s: position, open orders, equity."""
         st = self.state
-        try:
-            szi, _, orders = await self.executor.reconcile_raw()
-        except Exception as e:  # noqa: BLE001
-            log.warning("runtime reconcile failed: %s", e)
-            return
-        pos = st.position
-        if pos is not None and st.pos_state in (Pos.IN_POSITION, Pos.EXITING):
-            if szi == 0 and pos.exit_sz < pos.filled_sz:
-                await self.db.log_event("WARN", "reconcile: exchange flat but internal IN_POSITION"
-                                                " — booking unseen exit")
-                await self._close_unseen_exit(pos)
-        elif st.pos_state == Pos.FLAT and szi != 0:
-            await self.notifier.error(f"reconcile: exchange shows {szi:+.4f} BTC but bot is FLAT —"
-                                      f" not touching it; check the account")
-        elif st.pos_state == Pos.FLAT and orders:
-            await self.executor.cancel_all()
-            await self.db.log_event("WARN", f"reconcile: canceled {len(orders)} orphan orders")
+        for coin in getattr(self.executor, "coins", (self._primary(),)):
+            try:
+                szi, _, orders = await self.executor.reconcile_raw(coin)
+            except Exception as e:  # noqa: BLE001
+                log.warning("runtime reconcile failed (%s): %s", coin, e)
+                return
+            pos = st.position if (st.position
+                                  and (st.position.coin or self._primary()) == coin) else None
+            if pos is not None and st.pos_state in (Pos.IN_POSITION, Pos.EXITING):
+                if szi == 0 and pos.exit_sz < pos.filled_sz:
+                    await self.db.log_event("WARN", f"reconcile: exchange flat but internal"
+                                                    f" IN_POSITION ({coin}) — booking unseen exit")
+                    await self._close_unseen_exit(pos)
+            elif pos is None and szi != 0:
+                await self.notifier.error(f"reconcile: exchange shows {szi:+.4f} {coin} but bot"
+                                          f" has no such position — not touching it")
+            elif st.pos_state == Pos.FLAT and orders:
+                await self.executor.cancel_all()
+                await self.db.log_event("WARN", f"reconcile: canceled {len(orders)} orphan {coin} orders")
 
     async def _notify(self, text: str) -> None:
         try:
