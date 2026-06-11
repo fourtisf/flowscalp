@@ -150,16 +150,16 @@ class TgBot:
     # -- commands ----------------------------------------------------------
     async def cmd_start(self, update, context) -> None:
         await self._reply(update,
-                          "FlowScalp ready.\n"
-                          "/status – state, equity, day PnL\n"
-                          "/pnl day|week|all – realized PnL stats\n"
-                          "/positions – open position detail\n"
-                          "/set <key> <value> – adjust a setting\n"
-                          "/settings – full settings dump\n"
-                          "/pause • /resume – gate new entries\n"
-                          "/stop – KILL SWITCH (flatten now)\n"
-                          "/mode paper|live – live needs /confirm <code>\n"
-                          "/report – post summary to channel")
+                          "FlowScalp siap. Perintah:\n"
+                          "/status – kondisi bot, equity, PnL hari ini\n"
+                          "/pnl day|week|all – statistik hasil trading\n"
+                          "/positions – detail posisi terbuka\n"
+                          "/set <key> <nilai> – ubah pengaturan\n"
+                          "/settings – semua pengaturan + penjelasan\n"
+                          "/pause • /resume – tahan / lanjutkan entry baru\n"
+                          "/stop – TOMBOL DARURAT: tutup semua sekarang\n"
+                          "/mode paper|live – ganti mode (live butuh /confirm <kode>)\n"
+                          "/report – kirim ringkasan hari ini")
 
     async def cmd_status(self, update, context) -> None:
         st = self.state
@@ -173,7 +173,7 @@ class TgBot:
         now = int(time.time() * 1000)
         since = {"day": self.state.day_start_ts, "week": now - 7 * 86_400_000, "all": None}.get(period)
         if period not in ("day", "week", "all"):
-            await self._reply(update, "usage: /pnl [day|week|all]")
+            await self._reply(update, "cara pakai: /pnl day|week|all")
             return
         s = await self.db.summary(self.state.mode, since_ts=since)
         await self._reply(update, messages.pnl_text(period, self.state.mode, s))
@@ -187,7 +187,9 @@ class TgBot:
 
     async def cmd_set(self, update, context) -> None:
         if len(context.args) < 2:
-            await self._reply(update, "usage: /set <key> <value>")
+            await self._reply(update, "cara pakai: /set <key> <nilai>\n"
+                                      "contoh: /set risk_pct 0.25\n"
+                                      "daftar key + penjelasan: /settings")
             return
         key, value = context.args[0], " ".join(context.args[1:])
         ok, old, new = await self.store.set(key, value)
@@ -195,7 +197,7 @@ class TgBot:
             await self.db.log_event("INFO", f"/set {key}: {old} → {new}")
             await self._reply(update, f"{key}: {old} → {new}")
         else:
-            await self._reply(update, f"rejected: {new}")
+            await self._reply(update, f"ditolak: {new}")
 
     async def cmd_settings(self, update, context) -> None:
         await self._reply(update, messages.settings_text(self.store.current))
@@ -212,22 +214,22 @@ class TgBot:
     async def cmd_mode(self, update, context) -> None:
         target = (context.args[0].lower() if context.args else "")
         if target not in ("paper", "live"):
-            await self._reply(update, "usage: /mode paper|live")
+            await self._reply(update, "cara pakai: /mode paper|live")
             return
         if target == "paper":
             await self._reply(update, await self.engine.submit("mode", target="paper"))
             return
         if self.state.pos_state != Pos.FLAT:
-            await self._reply(update, "open position/order — /stop before going live")
+            await self._reply(update, "masih ada posisi/order terbuka — /stop dulu sebelum live")
             return
         code = self.confirm.request()
-        await self._reply(update, f"⚠️ going LIVE risks real funds.\n"
-                                  f"send /confirm {code} within {CONFIRM_TTL_S}s to proceed")
+        await self._reply(update, f"⚠️ mode LIVE memakai dana sungguhan.\n"
+                                  f"kirim /confirm {code} dalam {CONFIRM_TTL_S} detik untuk lanjut")
 
     async def cmd_confirm(self, update, context) -> None:
         code = context.args[0] if context.args else ""
         if not self.confirm.check(code):
-            await self._reply(update, "invalid or expired code — /mode live to retry")
+            await self._reply(update, "kode salah atau kedaluwarsa — ulangi /mode live")
             await self.db.log_event("WARN", "live confirm failed (bad/expired code)")
             return
         await self.db.log_event("INFO", "live mode confirmed by owner")

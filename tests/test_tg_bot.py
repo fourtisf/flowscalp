@@ -86,10 +86,10 @@ async def test_mode_live_requires_confirm_code(bot):
     # wrong code → rejected, code burned
     upd2, replies2 = mk_update(OWNER)
     await bot.cmd_confirm(upd2, mk_ctx("nope42"))
-    assert "invalid" in replies2[0] and bot.engine_stub.calls == []
+    assert "salah" in replies2[0] and bot.engine_stub.calls == []
     upd3, replies3 = mk_update(OWNER)
     await bot.cmd_confirm(upd3, mk_ctx(code))  # old code no longer valid (single try)
-    assert "invalid" in replies3[0] and bot.engine_stub.calls == []
+    assert "salah" in replies3[0] and bot.engine_stub.calls == []
 
     # proper flow
     upd4, replies4 = mk_update(OWNER)
@@ -109,7 +109,7 @@ async def test_confirm_expiry(bot):
     time.sleep(0.01)
     upd2, replies2 = mk_update(OWNER)
     await bot.cmd_confirm(upd2, mk_ctx(code))
-    assert "invalid or expired" in replies2[0]
+    assert "kedaluwarsa" in replies2[0]
     assert bot.engine_stub.calls == []
 
 
@@ -126,11 +126,11 @@ async def test_set_roundtrip_and_rejection(bot):
     assert bot.store.current.tp_r == 2.0
     upd2, replies2 = mk_update(OWNER)
     await bot.cmd_set(upd2, mk_ctx("risk_pct", "5"))
-    assert "rejected" in replies2[0] and "out of range" in replies2[0]
+    assert "ditolak" in replies2[0] and "out of range" in replies2[0]
     assert bot.store.current.risk_pct == 0.5
     upd3, replies3 = mk_update(OWNER)
     await bot.cmd_set(upd3, mk_ctx("martingale", "on"))
-    assert "rejected" in replies3[0] and "unknown key" in replies3[0]
+    assert "ditolak" in replies3[0] and "unknown key" in replies3[0]
 
 
 async def test_status_and_pnl_render(bot):
@@ -142,4 +142,4 @@ async def test_status_and_pnl_render(bot):
     assert "PnL [all]" in replies2[0]
     upd3, replies3 = mk_update(OWNER)
     await bot.cmd_pnl(upd3, mk_ctx("fortnight"))
-    assert "usage" in replies3[0]
+    assert "cara pakai" in replies3[0]
