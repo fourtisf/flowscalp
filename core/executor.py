@@ -336,6 +336,15 @@ class LiveExecutor:
         st = await self._retry("user_state", self._info.user_state, self.env.trading_address)
         return float(st["marginSummary"]["accountValue"])
 
+    async def spot_usdc(self) -> float:
+        """USDC sitting in the SPOT account (not tradeable for perps)."""
+        try:
+            st = await self._retry("spot_state", self._info.spot_user_state, self.env.trading_address)
+            return sum(float(b.get("total", 0) or 0)
+                       for b in st.get("balances", []) if b.get("coin") == "USDC")
+        except Exception:  # noqa: BLE001 — diagnostic only
+            return 0.0
+
     async def apply_realized(self, pnl_usd: float) -> None:
         pass  # live equity comes from the exchange
 

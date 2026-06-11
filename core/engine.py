@@ -231,6 +231,11 @@ class Engine:
                 await ex.boot()
                 eq = await ex.equity()
                 if eq <= 0:
+                    spot = await ex.spot_usdc()
+                    if spot > 0:
+                        raise RuntimeError(
+                            f"saldo PERPS $0, tapi ada ${spot:,.2f} di akun SPOT — pindahkan dulu"
+                            f" lewat tombol 'Perps ⇄ Spot' di app Hyperliquid, lalu /mode live lagi.")
                     raise RuntimeError(
                         f"equity akun live ${eq:,.2f} — alamat wallet utama salah (/setwallet)"
                         f" atau belum ada deposit. Tetap di paper.")
