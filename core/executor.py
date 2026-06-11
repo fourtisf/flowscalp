@@ -119,10 +119,14 @@ class PaperExecutor:
         self._pending: Optional[_PendingEntry] = None
         self._armed: Optional[Position] = None
         self._oid_seq = 0
+        # unique per executor instance so ids never collide with oids restored
+        # from a pre-restart snapshot (collision once mislabeled a manual
+        # close as an SL exit)
+        self._oid_ns = f"P{now_ms() % 100_000_000}"
 
     def _next_oid(self) -> str:
         self._oid_seq += 1
-        return f"P{self._oid_seq}"
+        return f"{self._oid_ns}-{self._oid_seq}"
 
     async def boot(self) -> None:
         stored = await self.db.get_setting(PAPER_EQUITY_KEY)
@@ -174,8 +178,10 @@ class PaperExecutor:
                                 now_ms(), px * sz * self.taker_fee, kind="taker_entry"))
 
     async def arm_exits(self, pos: Position) -> None:
-        pos.oids.setdefault("tp", self._next_oid())
-        pos.oids.setdefault("sl", self._next_oid())
+        if "tp" not in pos.oids:
+            pos.oids["tp"] = self._next_oid()
+        if "sl" not in pos.oids:
+            pos.oids["sl"] = self._next_oid()
         self._armed = pos
 
     async def cancel_all(self) -> None:

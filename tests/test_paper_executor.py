@@ -127,3 +127,28 @@ async def test_equity_ledger_persists(ex):
     e2 = PaperExecutor(_Env(), ex.db, lambda: 0.0, ex.on_fill)
     await e2.boot()
     assert await e2.equity() == pytest.approx(10_123.45)
+
+
+async def test_oids_unique_across_executor_instances(ex, tmp_path):
+    """Snapshot-restored oids from a previous run must never collide with a
+    fresh executor's ids (collision once relabeled a manual close as SL)."""
+    import asyncio as _aio
+    from core.executor import PaperExecutor
+    e2 = PaperExecutor(_Env(), ex.db, lambda: 100_000.0, ex.on_fill)
+    a = [ex._next_oid() for _ in range(3)]
+    await _aio.sleep(0.002)
+    b = [e2._next_oid() for _ in range(3)]
+    assert not set(a) & set(b)
+
+
+async def test_restored_position_manual_close_keeps_manual_reason(ex):
+    """Position restored from snapshot (old oids) + fresh executor: a manual
+    flatten must be booked as 'manual', and arm_exits must not reassign ids."""
+    pos = _pos()
+    pos.oids = {"entry": "P1", "tp": "P2", "sl": "P3"}   # pre-restart style ids
+    await ex.arm_exits(pos)
+    assert pos.oids["tp"] == "P2" and pos.oids["sl"] == "P3"
+    await ex.flatten("manual")
+    f = ex.fills[0]
+    assert f.kind == "flatten" and f.reason == "manual"
+    assert f.oid not in ("P1", "P2", "P3")

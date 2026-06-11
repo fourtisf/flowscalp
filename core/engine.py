@@ -425,7 +425,13 @@ class Engine:
         pos.exit_px = (pos.exit_px * pos.exit_sz + f.px * f.sz) / total if pos.exit_sz > 0 else f.px
         pos.exit_sz = total
         pos.fees_usd += f.fee_usd
-        if f.oid == pos.oids.get("tp"):
+        # explicit fill kind/reason wins; oid matching is the fallback for raw
+        # live fills (an oid collision must never relabel a manual close)
+        if f.kind in ("tp", "sl"):
+            reason = f.kind
+        elif f.kind == "flatten" and (f.reason or pos.pending_exit_reason):
+            reason = f.reason or pos.pending_exit_reason
+        elif f.oid == pos.oids.get("tp"):
             reason = "tp"
         elif f.oid == pos.oids.get("sl"):
             reason = "sl"
