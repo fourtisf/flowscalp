@@ -266,6 +266,24 @@ class Engine:
             st.set_bot_state(Bot.RUNNING)
             raise RuntimeError(f"mode switch failed, staying in {st.mode}: {e}") from e
 
+    async def _cmd_closepos(self) -> str:
+        """Manual close from the owner: cancel a pending entry or flatten."""
+        st = self.state
+        pos = st.position
+        if pos is None:
+            return "tidak ada posisi/order yang terbuka"
+        if st.pos_state == Pos.PENDING_ENTRY:
+            await self.executor.cancel_entry(pos.oids.get("entry", ""))
+            st.position = None
+            st.set_pos_state(Pos.FLAT)
+            return "order entry dibatalkan ✅"
+        if st.pos_state in (Pos.IN_POSITION, Pos.EXITING):
+            pos.pending_exit_reason = "manual"
+            st.set_pos_state(Pos.EXITING)
+            await self.executor.flatten("manual")
+            return "posisi ditutup di harga pasar ✅"
+        return f"tidak bisa: {st.pos_state.value}"
+
     async def _cmd_testtrade(self) -> str:
         """Inject one synthetic trade (paper only) to exercise the full
         entry→manage→exit pipeline on demand."""

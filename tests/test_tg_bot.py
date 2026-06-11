@@ -332,3 +332,10 @@ async def test_dashboard_command(bot, tmp_path):
     await bot.cmd_dashboard(upd2, mk_ctx())
     assert "https://abc-def.trycloudflare.com" in replies2[0]
     assert "tok123" in replies2[0]
+
+
+async def test_closepos_callback_routes_to_engine(bot):
+    upd, st = mk_callback(OWNER, "closepos")
+    await bot.on_callback(upd, mk_ctx())
+    assert ("closepos", {}) in bot.engine_stub.calls
+    assert "ok:closepos" in st["edits"][0]

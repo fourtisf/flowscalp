@@ -243,3 +243,17 @@ async def test_testtrade_injects_full_cycle(harness):
     assert (await db.recent_trades("paper", 1))[0]["exit_reason"] == "kill"
     state.mode = "live"
     assert "hanya tersedia di mode paper" in await engine._cmd_testtrade()
+
+
+async def test_manual_close_button_path(harness):
+    engine, db, feed, state, notifier, sig_bar = await harness()
+    feed.mid = 100_000.0
+    await engine._cmd_testtrade()
+    await engine._dispatch("mid", state.position.entry_px - 5)   # fill entry
+    assert state.pos_state == Pos.IN_POSITION
+    feed.mid = state.position.entry_px + 40
+    res = await engine._cmd_closepos()
+    assert "ditutup" in res and state.pos_state == Pos.FLAT
+    tr = (await db.recent_trades("paper", 1))[0]
+    assert tr["exit_reason"] == "manual"
+    assert "tidak ada posisi" in await engine._cmd_closepos()
