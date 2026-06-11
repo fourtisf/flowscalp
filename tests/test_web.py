@@ -54,7 +54,9 @@ async def test_auth_required_on_all_api_routes(client):
 async def test_index_served_openly(client):
     r = await client.get("/")
     assert r.status_code == 200 and "flowscalp" in r.text.lower()
-    assert "localStorage" not in r.text  # token must stay in memory only
+    # owner-requested persistent login: token remembered in the owner's
+    # browser localStorage and accepted via #fragment (never sent to server)
+    assert "localStorage" in r.text and "location.hash" in r.text
 
 
 async def test_status_shape_flat_and_open(client):

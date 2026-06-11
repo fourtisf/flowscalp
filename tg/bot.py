@@ -283,12 +283,10 @@ class TgBot:
         token = getattr(self.env, "dash_bearer_token", "")
         if url:
             await self._reply(update,
-                              f"📊 dashboard real-time:\n{url}\n\n"
-                              f"token (tempel sekali di halaman):\n{token}\n\n"
-                              f"isi: PnL live, kurva equity, posisi terbuka, riwayat trade "
-                              f"(jam, entry, exit, R, $, alasan). refresh otomatis 5 detik.\n"
-                              f"catatan: URL berganti kalau tunnel di-restart — cek lagi "
-                              f"dengan /dashboard.")
+                              f"📊 dashboard — ketuk, langsung masuk tanpa login:\n"
+                              f"{url}/#{token}\n\n"
+                              f"browser Anda akan mengingatnya; selanjutnya buka {url} saja cukup.\n"
+                              f"catatan: URL berganti kalau tunnel di-restart — cek lagi dengan /dashboard.")
         else:
             await self._reply(update,
                               "tunnel dashboard belum aktif di VPS.\n"

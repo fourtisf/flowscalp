@@ -328,14 +328,38 @@ async function refresh(){
 function showGate(msg){TOKEN=null;$("app").style.display="none";$("gate").style.display="flex";
   $("gateerr").textContent=msg||"";$("tok").value="";$("tok").focus();}
 
+async function unlock(t,remember){
+  TOKEN=t;
+  try{
+    await api("/api/status");
+    if(remember)localStorage.setItem("fs_token",t);
+    $("gate").style.display="none";$("app").style.display="block";await refresh();
+    return true;
+  }catch(e){
+    TOKEN=null;localStorage.removeItem("fs_token");
+    return e.message==="401"?"401":"net";
+  }
+}
 async function tryEnter(){
-  TOKEN=$("tok").value.trim();
-  if(!TOKEN){$("gateerr").textContent="token kosong";return;}
-  try{await api("/api/status");$("gate").style.display="none";$("app").style.display="block";await refresh();}
-  catch(e){showGate(e.message==="401"?"token salah":"server tidak terjangkau");}
+  const t=$("tok").value.trim();
+  if(!t){$("gateerr").textContent="token kosong";return;}
+  const r=await unlock(t,true);
+  if(r!==true)showGate(r==="401"?"token salah":"server tidak terjangkau");
 }
 $("enter").addEventListener("click",tryEnter);
 $("tok").addEventListener("keydown",e=>{if(e.key==="Enter")tryEnter();});
+
+// auto-login: token from the Telegram /dashboard link (#fragment, never sent
+// to the server) or remembered from a previous visit in this browser
+(async()=>{
+  let t=null;
+  if(location.hash.length>1){
+    t=decodeURIComponent(location.hash.slice(1));
+    history.replaceState(null,"",location.pathname); // scrub it from the URL bar
+  }
+  if(!t)t=localStorage.getItem("fs_token");
+  if(t)await unlock(t,true);
+})();
 setInterval(()=>{if(TOKEN)refresh();},5000);
 </script>
 </body>

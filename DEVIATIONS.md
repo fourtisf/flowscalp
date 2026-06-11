@@ -103,6 +103,11 @@ be run once on the owner's VPS.
     requested plain-text messages after first use, so replies and alerts are
     sent as normal Telegram text.
 
+16b. **Dashboard token persistence.** §8 said the token lives in a JS
+    variable only. At the owner's request the dashboard now auto-logs-in:
+    /dashboard sends `url/#<token>` (fragment never reaches the server) and
+    the browser remembers it in localStorage. API auth itself is unchanged.
+
 17. **Backtest circuit breakers.** §9 only mandates strategy + sizing + fill
     rules; the daily-loss halt, loss-streak cooldown and anti-overtrade
     spacing/dedupe are also simulated so backtest trade counts match what the
