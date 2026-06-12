@@ -8,6 +8,9 @@
 #   [2] tanpa filter bias tren 15m   (--no-bias)
 #   [3] jam trading dibuka 24 jam    (--session 00:00-24:00)
 # Baseline [1] juga mencetak "PnL by UTC hour" — bahan menyetel session_windows.
+# Data: arsip publik Binance (UM futures 1m) — Hyperliquid hanya menyimpan
+# ±3.5 hari candle 1m, terlalu pendek untuk keputusan apa pun. File CSV lama
+# yang kekecilan (< MIN_ROWS baris) otomatis diunduh ulang.
 # Catatan: tanpa data aggTrades Binance, gate CVD dilewati di backtest,
 # jadi baris B dan C di tabel ablation akan identik (CVD belum tervalidasi).
 set -euo pipefail
@@ -16,6 +19,7 @@ APP=${APP:-/opt/flowscalp}
 PY=${PY:-$APP/venv/bin/python}
 START=${START:-$(date -u -d "95 days ago" +%F)}
 END=${END:-$(date -u -d "yesterday" +%F)}
+MIN_ROWS=${MIN_ROWS:-20000}
 LOG=$APP/data/backtest_summary.txt
 
 command -v "$PY" >/dev/null 2>&1 || { echo "ERROR: $PY tidak ditemukan — jalankan di VPS, atau set APP=/path/repo PY=python3"; exit 1; }
@@ -30,9 +34,9 @@ say "FlowScalp backtest_all — data $START → $END (UTC), validasi oos 0.3"
 for C in BTC SOL ETH; do
   c=$(printf '%s' "$C" | tr '[:upper:]' '[:lower:]')
   csv="data/${c}_1m.csv"
-  if [ ! -s "$csv" ]; then
-    run "⏬ download data $C $START → $END (sekali saja, 1-2 menit, sabar — tanpa progress)…" \
-      "$PY" -m backtest.data --coin "$C" --start "$START" --end "$END" --out "$csv"
+  if [ ! -s "$csv" ] || [ "$(wc -l < "$csv")" -lt "$MIN_ROWS" ]; then
+    run "⏬ download data $C $START → $END dari arsip Binance (sekali saja)…" \
+      "$PY" -m backtest.data --source binance --coin "$C" --start "$START" --end "$END" --out "$csv"
   fi
   say ""
   say "════════════════════════ $C ════════════════════════"

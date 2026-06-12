@@ -35,6 +35,55 @@ def test_binance_kline_format_headerless_and_microseconds(tmp_path):
     assert c[0].close == 100.5 and c[1].ts - c[0].ts == 60_000
 
 
+def _kline_zip(start_ts_ms: int, n: int, *, micros: bool = False, header: bool = False) -> bytes:
+    import io
+    import zipfile
+    mult = 1000 if micros else 1
+    lines = []
+    if header:
+        lines.append("open_time,open,high,low,close,volume,close_time,qv,n,tb,tq,ig")
+    for i in range(n):
+        ts = (start_ts_ms + i * 60_000) * mult
+        lines.append(f"{ts},100,101,99,100.5,5.0,0,0,10,2.5,0,0")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("k.csv", "\n".join(lines))
+    return buf.getvalue()
+
+
+def test_binance_downloader_monthly_plus_daily_fallback():
+    """May = monthly zip (with header, µs). June = no monthly file yet →
+    daily zips for the requested days only; 404 days are skipped. Output is
+    sorted, deduped and trimmed to [start, end)."""
+    from backtest.data import download_binance_klines
+
+    may_1 = 1_777_593_600_000        # 2026-05-01 00:00 UTC
+    jun_1 = 1_780_272_000_000        # 2026-06-01 00:00 UTC
+    start = jun_1 - 2 * 86_400_000   # 2026-05-30
+    end = jun_1 + 2 * 86_400_000     # exclusive → 2026-06-03
+
+    urls = []
+
+    def fetch(u: str):
+        urls.append(u)
+        if "monthly" in u and "2026-05" in u:
+            return _kline_zip(may_1, 44_640, micros=True, header=True)  # full May
+        if "daily" in u and "2026-06-01" in u:
+            return _kline_zip(jun_1, 1440)
+        if "daily" in u and "2026-06-02" in u:
+            return _kline_zip(jun_1 + 86_400_000, 1440)
+        return None                   # June monthly + other days → 404
+
+    c = download_binance_klines(start, end, coin="SOL", fetch=fetch)
+    assert any("SOLUSDT-1m-2026-05.zip" in u for u in urls)
+    assert not any("daily" in u and "2026-05" in u for u in urls)   # May covered monthly
+    assert c[0].ts == start                                          # trimmed to start
+    assert c[-1].ts == end - 60_000                                  # exclusive end
+    assert len(c) == 4 * 1440                                        # 4 full days
+    assert all(b.ts - a.ts == 60_000 for a, b in zip(c, c[1:]))      # gapless, sorted
+    assert c[0].close == 100.5
+
+
 def test_aggtrades_delta(tmp_path):
     t0 = 1_760_000_000_000 // 60_000 * 60_000
     rows = [
