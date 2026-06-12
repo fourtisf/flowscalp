@@ -83,9 +83,9 @@ def _parse_kline_zip(content: bytes) -> list[Candle]:
 
 
 def download_binance_klines(start_ms: int, end_ms: int, coin: str = "BTC",
-                            url: str = BINANCE_UM_URL,
+                            url: str = BINANCE_UM_URL, interval: str = "1m",
                             fetch: Optional[Callable[[str], Optional[bytes]]] = None) -> list[Candle]:
-    """UM-futures 1m klines from the Binance Vision archive. Whole months come
+    """UM-futures klines from the Binance Vision archive. Whole months come
     as one monthly zip; months without a monthly file yet (the current one)
     fall back to daily zips. Missing files (404) are skipped."""
     symbol = f"{coin.upper()}USDT"
@@ -101,11 +101,11 @@ def download_binance_klines(start_ms: int, end_ms: int, coin: str = "BTC",
     out: dict[int, Candle] = {}
     cur = s_date.replace(day=1)
     while cur <= e_date:
-        content = fetch(f"{url}/monthly/klines/{symbol}/1m/{symbol}-1m-{cur:%Y-%m}.zip")
+        content = fetch(f"{url}/monthly/klines/{symbol}/{interval}/{symbol}-{interval}-{cur:%Y-%m}.zip")
         if content is not None:
             for c in _parse_kline_zip(content):
                 out[c.ts] = c
-            print(f"  {symbol} {cur:%Y-%m} (zip bulanan) ✓", flush=True)
+            print(f"  {symbol} {interval} {cur:%Y-%m} (zip bulanan) ✓", flush=True)
         else:
             got = 0
             for day in range(1, calendar.monthrange(cur.year, cur.month)[1] + 1):
@@ -114,13 +114,13 @@ def download_binance_klines(start_ms: int, end_ms: int, coin: str = "BTC",
                     break
                 if d < s_date:
                     continue
-                dc = fetch(f"{url}/daily/klines/{symbol}/1m/{symbol}-1m-{d:%Y-%m-%d}.zip")
+                dc = fetch(f"{url}/daily/klines/{symbol}/{interval}/{symbol}-{interval}-{d:%Y-%m-%d}.zip")
                 if dc is None:
                     continue
                 for c in _parse_kline_zip(dc):
                     out[c.ts] = c
                 got += 1
-            print(f"  {symbol} {cur:%Y-%m} ({got} zip harian) ✓", flush=True)
+            print(f"  {symbol} {interval} {cur:%Y-%m} ({got} zip harian) ✓", flush=True)
         cur = date(cur.year + (cur.month == 12), cur.month % 12 + 1, 1)
     return [out[k] for k in sorted(out) if start_ms <= k < end_ms]
 
@@ -216,11 +216,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                          " binance: arsip publik Binance (berbulan-bulan)")
     args = ap.parse_args(argv)
     if args.source == "binance":
-        if args.interval != "1m":
-            print("--source binance hanya mendukung --interval 1m")
-            return 2
         candles = download_binance_klines(_parse_date(args.start), _parse_date(args.end),
-                                          coin=args.coin.upper())
+                                          coin=args.coin.upper(), interval=args.interval)
     else:
         candles = download_candles(_parse_date(args.start), _parse_date(args.end), args.interval,
                                    coin=args.coin.upper())

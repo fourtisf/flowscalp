@@ -186,6 +186,76 @@ def test_tf15m_main_runs_and_prints_ringkas(tmp_path, capsys):
     assert "RINGKAS | T15 | IS" in out and "OOS" in out
 
 
+def _bar4h(i: int, o: float, h: float, lo: float, c: float, base_ts: int = 1_800_000_000_000) -> Candle:
+    t0 = base_ts // 14_400_000 * 14_400_000
+    return Candle(t0 + i * 14_400_000, o, h, lo, c, 100.0)
+
+
+def test_trend_breakout_entry_next_open_and_chandelier_exit():
+    """Flat range → breakout close → entry at the NEXT bar's open (no
+    lookahead), trailing stop ratchets with highest close, exits on touch."""
+    from backtest.trend import simulate_trend
+    bars = [_bar4h(i, 100.0, 101.0, 99.0, 100.0) for i in range(60)]
+    bars.append(_bar4h(60, 100.0, 106.0, 100.0, 105.0))     # breakout close > 101
+    bars.append(_bar4h(61, 105.0, 112.0, 104.0, 111.0))     # fill at open 105(+slip)
+    bars.append(_bar4h(62, 111.0, 118.0, 110.0, 117.0))     # trend runs, stop ratchets
+    bars.append(_bar4h(63, 117.0, 117.5, 90.0, 92.0))       # collapse through the stop
+    res = simulate_trend(bars, lookback=42, atr_k=3.0, funding_8h_pct=0.0)
+    assert len(res.trades) == 1
+    t = res.trades[0]
+    assert t.entry_px == pytest.approx(105.0 * 1.0001)      # next bar open + slip
+    assert t.ts_open == bars[61].ts
+    assert t.reason == "trail"
+    # the chandelier ratcheted ABOVE entry while the trend ran, so the collapse
+    # exits at the locked-in stop — in profit, well below the peak close
+    assert t.entry_px < t.exit_px < 117.0
+    assert t.r > 0
+    assert t.pnl == pytest.approx((t.exit_px - t.entry_px) * t.size_btc - t.fees, rel=1e-9)
+
+
+def test_trend_no_trades_on_flat_tape_and_deterministic():
+    from backtest.trend import simulate_trend
+    flat = [_bar4h(i, 100.0, 101.0, 99.0, 100.0) for i in range(200)]
+    assert simulate_trend(flat).trades == []
+    up = [_bar4h(i, 100.0 + i, 101.5 + i, 99.5 + i, 101.0 + i) for i in range(120)]
+    r1, r2 = simulate_trend(up), simulate_trend(up)
+    assert [(t.ts_open, t.r) for t in r1.trades] == [(t.ts_open, t.r) for t in r2.trades]
+    assert r1.trades, "a clean uptrend must produce at least one trade"
+    assert all(t.reason in ("trail", "eod") for t in r1.trades)
+
+
+def test_trend_funding_costs_reduce_pnl():
+    from backtest.trend import simulate_trend
+    up = [_bar4h(i, 100.0 + i, 101.5 + i, 99.5 + i, 101.0 + i) for i in range(120)]
+    no_funding = simulate_trend(up, funding_8h_pct=0.0)
+    with_funding = simulate_trend(up, funding_8h_pct=0.05)
+    assert sum(t.pnl for t in with_funding.trades) < sum(t.pnl for t in no_funding.trades)
+
+
+def test_trend_main_smoke_and_ringkas(tmp_path, capsys):
+    from backtest.data import save_candles as save
+    from backtest.trend import main as trend_main
+    save(generate_candles(days=100, seed=7), str(tmp_path / "c.csv"))   # 1m → auto-resample
+    rc = trend_main(["--csv", str(tmp_path / "c.csv"), "--oos", "0.3",
+                     "--lookback", "28", "--atr-k", "2.5", "--tag", "T4H",
+                     "--out", str(tmp_path / "r")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "@ 4h" in out and "RINGKAS | T4H | IS" in out
+
+
+def test_binance_downloader_interval_in_urls():
+    from backtest.data import download_binance_klines
+    urls = []
+
+    def fetch(u: str):
+        urls.append(u)
+        return None
+    download_binance_klines(1_777_593_600_000, 1_777_593_600_000 + 86_400_000,
+                            coin="ETH", interval="4h", fetch=fetch)
+    assert urls and all("/4h/" in u and "ETHUSDT-4h-" in u for u in urls)
+
+
 def test_cvd_filter_with_deltas_changes_behavior():
     candles = generate_candles(days=6, seed=7)
     s = S_OPEN
