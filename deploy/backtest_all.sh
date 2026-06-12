@@ -15,14 +15,18 @@
 # jadi baris B dan C di tabel ablation akan identik (CVD belum tervalidasi).
 set -euo pipefail
 
-APP=${APP:-/opt/flowscalp}
-PY=${PY:-$APP/venv/bin/python}
+# Kode yang dipakai = repo tempat script ini berada (hasil `git pull` terbaru),
+# BUKAN salinan deploy /opt — jadi tidak perlu install.sh / restart bot.
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+APP=${APP:-$REPO}
+PY=${PY:-/opt/flowscalp/venv/bin/python}
+command -v "$PY" >/dev/null 2>&1 || PY=python3
 START=${START:-$(date -u -d "95 days ago" +%F)}
 END=${END:-$(date -u -d "yesterday" +%F)}
 MIN_ROWS=${MIN_ROWS:-20000}
 LOG=$APP/data/backtest_summary.txt
 
-command -v "$PY" >/dev/null 2>&1 || { echo "ERROR: $PY tidak ditemukan — jalankan di VPS, atau set APP=/path/repo PY=python3"; exit 1; }
+command -v "$PY" >/dev/null 2>&1 || { echo "ERROR: python tidak ditemukan"; exit 1; }
 cd "$APP"
 mkdir -p data
 : > "$LOG"
