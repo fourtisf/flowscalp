@@ -34,9 +34,31 @@ from backtest.data import load_agg_trades, load_candles
 
 ONE_MIN_MS = 60_000
 FIFTEEN_MIN_MS = 900_000
+ONE_HOUR_MS = 3_600_000
 TAKER_SLIP = 0.0001
 POST_EXIT_BAR_SPACING = 3
-WARMUP_15M = 210
+WARMUP_15M = 210      # bias-frame bars required before any evaluation
+
+
+def resample_candles(c1m: list["Candle"], frame_ms: int) -> list["Candle"]:
+    """Aggregate 1m candles into frame_ms buckets (OHLC first/max/min/last,
+    volume summed). The trailing partial bucket is kept — the dataset ends it."""
+    out: list[Candle] = []
+    cur: Optional[Candle] = None
+    for b in c1m:
+        t0 = b.ts // frame_ms * frame_ms
+        if cur is None or t0 > cur.ts:
+            if cur is not None:
+                out.append(cur)
+            cur = Candle(t0, b.open, b.high, b.low, b.close, b.volume)
+        else:
+            cur.high = max(cur.high, b.high)
+            cur.low = min(cur.low, b.low)
+            cur.close = b.close
+            cur.volume += b.volume
+    if cur is not None:
+        out.append(cur)
+    return out
 
 
 @dataclass
@@ -66,13 +88,19 @@ class SimResult:
 
 def simulate(candles: list[Candle], s: Settings, *, deltas_map: Optional[dict[int, float]] = None,
              start_equity: float = 10_000.0, maker_fee: float = FALLBACK_MAKER_FEE,
-             taker_fee: float = FALLBACK_TAKER_FEE, sz_decimals: int = 5) -> SimResult:
+             taker_fee: float = FALLBACK_TAKER_FEE, sz_decimals: int = 5,
+             bias_frame_ms: int = FIFTEEN_MIN_MS) -> SimResult:
     res = SimResult(cvd_used=deltas_map is not None)
     k1 = max(s.sweep_lookback + 24, 60)          # exact: every evaluate component is look-back bounded
     c1m: deque[Candle] = deque(maxlen=k1)
     d1m: deque[Optional[float]] = deque(maxlen=k1)
     c15m: deque[Candle] = deque(maxlen=300)      # full buffer: EMA200 result depends on history length
     cur15: Optional[Candle] = None
+    # bar duration drives close timestamps, entry lifetimes and exit spacing,
+    # so resampled (e.g. 15m) streams replay with the same semantics as 1m
+    bar_ms = ONE_MIN_MS
+    if len(candles) > 1:
+        bar_ms = min(b.ts - a.ts for a, b in zip(candles[:50], candles[1:51]))
 
     equity = start_equity
     pending: Optional[dict] = None               # side, px, sz, bars_left, sig
@@ -85,7 +113,7 @@ def simulate(candles: list[Candle], s: Settings, *, deltas_map: Optional[dict[in
     day = ""
     day_pnl = 0.0
     halted = False
-    pending_lifetime = max(1, math.ceil(s.maker_timeout_s / 60))
+    pending_lifetime = max(1, math.ceil(s.maker_timeout_s * 1000 / bar_ms))
 
     def close_trade(t: BTTrade, px: float, ts: int, reason: str, fee_rate: float) -> None:
         nonlocal pos, equity, consec_losses, cooldown_until, day_pnl, halted, last_exit_bar_ts
@@ -111,8 +139,8 @@ def simulate(candles: list[Candle], s: Settings, *, deltas_map: Optional[dict[in
 
     day_start_equity = equity
     for bar in candles:
-        # ---- roll 15m bars from the 1m stream (closed bars only, no lookahead)
-        b15 = bar.ts // FIFTEEN_MIN_MS * FIFTEEN_MIN_MS
+        # ---- roll bias-frame bars from the primary stream (closed bars only, no lookahead)
+        b15 = bar.ts // bias_frame_ms * bias_frame_ms
         if cur15 is None or b15 > cur15.ts:
             if cur15 is not None:
                 c15m.append(cur15)
@@ -123,7 +151,7 @@ def simulate(candles: list[Candle], s: Settings, *, deltas_map: Optional[dict[in
             cur15.close = bar.close
             cur15.volume += bar.volume
 
-        close_ts = bar.ts + ONE_MIN_MS
+        close_ts = bar.ts + bar_ms
 
         # ---- UTC day rollover
         d = utc_day(close_ts)
@@ -178,7 +206,9 @@ def simulate(candles: list[Candle], s: Settings, *, deltas_map: Optional[dict[in
         c1m.append(bar)
         d1m.append(deltas_map.get(bar.ts, 0.0) if deltas_map is not None else None)
 
-        if pos is not None or pending is not None or len(c15m) < WARMUP_15M:
+        if pos is not None or pending is not None:
+            continue
+        if s.bias_filter and len(c15m) < WARMUP_15M:
             continue
         if halted or close_ts < cooldown_until:
             continue
@@ -187,7 +217,7 @@ def simulate(candles: list[Candle], s: Settings, *, deltas_map: Optional[dict[in
             consec_losses = 0
         if consec_losses >= s.max_consec_losses:
             continue
-        if last_exit_bar_ts and (bar.ts - last_exit_bar_ts) // ONE_MIN_MS < POST_EXIT_BAR_SPACING:
+        if last_exit_bar_ts and (bar.ts - last_exit_bar_ts) // bar_ms < POST_EXIT_BAR_SPACING:
             continue
 
         ev = evaluate_ex(list(c1m), list(c15m),
@@ -213,7 +243,7 @@ def simulate(candles: list[Candle], s: Settings, *, deltas_map: Optional[dict[in
     if pos is not None and candles:
         last = candles[-1]
         px = last.close * (1 - TAKER_SLIP) if pos.side == "long" else last.close * (1 + TAKER_SLIP)
-        close_trade(pos, px, last.ts + ONE_MIN_MS, "eod", taker_fee)
+        close_trade(pos, px, last.ts + bar_ms, "eod", taker_fee)
     res.curve.insert(0, (candles[0].ts if candles else 0, start_equity))
     return res
 
@@ -314,6 +344,12 @@ def _settings_from_args(a) -> Settings:
                 sweep_lookback=a.lookback, sweep_vol_mult=a.vol_mult,
                 cvd_filter=not a.no_cvd, bias_filter=not a.no_bias,
                 allow_taker_entry=a.taker_entry, time_stop_min=a.time_stop)
+    if a.atr_floor is not None:
+        over["atr_floor_bps"] = a.atr_floor
+    if a.atr_ceil is not None:
+        over["atr_ceil_bps"] = a.atr_ceil
+    if a.sl_buffer is not None:
+        over["sl_buffer_pct"] = a.sl_buffer
     if a.session:
         over["session_windows"] = tuple(w.strip() for w in a.session.split(",") if w.strip())
     if a.blackout is not None:
@@ -321,9 +357,9 @@ def _settings_from_args(a) -> Settings:
     return Settings(**over)
 
 
-def _run_one(tag, candles, s, deltas, a, write_files=False):
+def _run_one(tag, candles, s, deltas, a, write_files=False, bias_ms=FIFTEEN_MIN_MS):
     res = simulate(candles, s, deltas_map=deltas, start_equity=a.start_equity,
-                   maker_fee=a.fee_maker, taker_fee=a.fee_taker)
+                   maker_fee=a.fee_maker, taker_fee=a.fee_taker, bias_frame_ms=bias_ms)
     rep = compute_report(res, a.start_equity)
     print_report(tag, rep)
     if write_files:
@@ -335,7 +371,7 @@ def _run_one(tag, candles, s, deltas, a, write_files=False):
     return res, rep
 
 
-def _grid(candles, base: Settings, deltas, a) -> None:
+def _grid(candles, base: Settings, deltas, a, bias_ms=FIFTEEN_MIN_MS) -> None:
     rows = []
     grid = list(itertools.product((1.4, 1.8, 2.2), (0.4, 0.5, 0.7), (20, 30, 60), (1.0, 1.7, 2.2)))
     print(f"\n=== GRID ({len(grid)} combos) ===")
@@ -343,7 +379,7 @@ def _grid(candles, base: Settings, deltas, a) -> None:
         s = base.model_copy(update={"tp_r": tp_r, "sl_cap_pct": sl_cap,
                                     "sweep_lookback": lb, "sweep_vol_mult": vm})
         res = simulate(candles, s, deltas_map=deltas, start_equity=a.start_equity,
-                       maker_fee=a.fee_maker, taker_fee=a.fee_taker)
+                       maker_fee=a.fee_maker, taker_fee=a.fee_taker, bias_frame_ms=bias_ms)
         rep = compute_report(res, a.start_equity)
         rows.append(((tp_r, sl_cap, lb, vm), rep))
         pf_s = "—" if rep["profit_factor"] is None else f"{rep['profit_factor']:.2f}"
@@ -361,7 +397,7 @@ def _grid(candles, base: Settings, deltas, a) -> None:
     print("⚠ in-sample results — validate on the OOS split before trusting any of this.")
 
 
-def _ablate(candles, base: Settings, deltas, a) -> None:
+def _ablate(candles, base: Settings, deltas, a, bias_ms=FIFTEEN_MIN_MS) -> None:
     configs = [
         ("A base structure", {"sweep_vol_mult": 1.0, "cvd_filter": False, "funding_filter": False}),
         ("B +volume", {"cvd_filter": False, "funding_filter": False}),
@@ -375,7 +411,7 @@ def _ablate(candles, base: Settings, deltas, a) -> None:
     for tag, over in configs:
         s = base.model_copy(update=over)
         res = simulate(candles, s, deltas_map=deltas, start_equity=a.start_equity,
-                       maker_fee=a.fee_maker, taker_fee=a.fee_taker)
+                       maker_fee=a.fee_maker, taker_fee=a.fee_taker, bias_frame_ms=bias_ms)
         rep = compute_report(res, a.start_equity)
         rows.append((tag, rep))
     print(f"{'config':<18} {'trades':>6} {'win%':>6} {'PF':>6} {'netR':>8} {'fees$':>9}")
@@ -400,6 +436,12 @@ def main(argv=None) -> int:
     ap.add_argument("--taker-entry", action="store_true")
     ap.add_argument("--session", help='override session windows, e.g. "07:00-20:00"')
     ap.add_argument("--blackout", help='override blackout windows ("" = none)')
+    ap.add_argument("--tf", choices=("1m", "15m"), default="1m",
+                    help="15m: agregasi bar 15 menit; bias EMA200 pindah ke frame 4 jam")
+    ap.add_argument("--atr-floor", type=float, help="override atr_floor_bps")
+    ap.add_argument("--atr-ceil", type=float, help="override atr_ceil_bps")
+    ap.add_argument("--sl-buffer", type=float, help="override sl_buffer_pct")
+    ap.add_argument("--tag", default="", help="print a one-line RINGKAS summary with this label")
     ap.add_argument("--oos", type=float, help="hold out this fraction (e.g. 0.3) chronologically")
     ap.add_argument("--grid", action="store_true")
     ap.add_argument("--ablate", action="store_true")
@@ -413,26 +455,44 @@ def main(argv=None) -> int:
     print(f"loaded {len(candles)} 1m candles"
           f" ({(candles[-1].ts - candles[0].ts) / 86_400_000:.1f} days)" if candles else "no candles")
     deltas = load_agg_trades(a.trades) if a.trades else None
+    bias_ms = FIFTEEN_MIN_MS
+    if a.tf == "15m":
+        if deltas is not None:
+            print("--tf 15m belum mendukung --trades (delta CVD masih per-1m)")
+            return 2
+        candles = resample_candles(candles, FIFTEEN_MIN_MS)
+        bias_ms = ONE_HOUR_MS
+        print(f"tf 15m: {len(candles)} bar 15 menit; bias EMA200 di frame 1 jam")
     s = _settings_from_args(a)
     if deltas is None and s.cvd_filter:
         print("⚠ no --trades input: cvd_filter runs UNVALIDATED (gate skipped in backtest)."
               " Supply Binance aggTrades to validate CVD.")
 
+    def _pf(rep) -> str:
+        return "—" if rep["profit_factor"] is None else f"{rep['profit_factor']:.2f}"
+
     if a.oos:
         cut = int(len(candles) * (1 - a.oos))
         is_c, oos_c = candles[:cut], candles[cut:]
-        _run_one(f"IN-SAMPLE ({1 - a.oos:.0%})", is_c, s, deltas, a, write_files=True)
+        _, rep_is = _run_one(f"IN-SAMPLE ({1 - a.oos:.0%})", is_c, s, deltas, a,
+                             write_files=True, bias_ms=bias_ms)
         if a.grid:
-            _grid(is_c, s, deltas, a)
+            _grid(is_c, s, deltas, a, bias_ms=bias_ms)
         if a.ablate:
-            _ablate(is_c, s, deltas, a)
-        _run_one(f"OUT-OF-SAMPLE ({a.oos:.0%})", oos_c, s, deltas, a)
+            _ablate(is_c, s, deltas, a, bias_ms=bias_ms)
+        _, rep_o = _run_one(f"OUT-OF-SAMPLE ({a.oos:.0%})", oos_c, s, deltas, a, bias_ms=bias_ms)
+        if a.tag:
+            print(f"RINGKAS | {a.tag} | IS {rep_is['trades']}t PF {_pf(rep_is)}"
+                  f" {rep_is['net_r']:+.1f}R | OOS {rep_o['trades']}t PF {_pf(rep_o)}"
+                  f" {rep_o['net_r']:+.1f}R")
     else:
-        _run_one("FULL PERIOD", candles, s, deltas, a, write_files=True)
+        _, rep = _run_one("FULL PERIOD", candles, s, deltas, a, write_files=True, bias_ms=bias_ms)
         if a.grid:
-            _grid(candles, s, deltas, a)
+            _grid(candles, s, deltas, a, bias_ms=bias_ms)
         if a.ablate:
-            _ablate(candles, s, deltas, a)
+            _ablate(candles, s, deltas, a, bias_ms=bias_ms)
+        if a.tag:
+            print(f"RINGKAS | {a.tag} | FULL {rep['trades']}t PF {_pf(rep)} {rep['net_r']:+.1f}R")
     return 0
 
 

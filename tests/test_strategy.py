@@ -39,6 +39,15 @@ def test_no_signal_on_flat_tape():
     assert evaluate(flat_1m(), C15, None, settings()) is None
 
 
+def test_bias_off_skips_bias_frame_warmup():
+    """With bias_filter off, a short bias-frame history must NOT block
+    evaluation; with it on, the 210-bar EMA200 warm-up applies (fail-closed)."""
+    c = long_sweep_same_bar(vol_sweep=200.0)
+    short15 = flat_15m(n=5)
+    assert evaluate_ex(c, short15, None, settings(), None).signal is not None
+    assert evaluate_ex(c, short15, None, settings(bias_filter=True), None).signal is None
+
+
 def test_skip_when_sl_distance_exceeds_cap():
     c = long_sweep_same_bar(sweep_low=99_300.0)  # 0.7% structural SL > 0.5% cap
     assert evaluate(c, C15, None, settings()) is None
@@ -153,4 +162,5 @@ def test_funding_skew_gate():
 
 def test_insufficient_history_returns_none():
     assert evaluate(long_sweep_same_bar()[-40:], C15, None, settings()) is None
-    assert evaluate(long_sweep_same_bar(), C15[:100], None, settings()) is None
+    # short bias-frame history only blocks when the bias filter needs it
+    assert evaluate(long_sweep_same_bar(), C15[:100], None, settings(bias_filter=True)) is None

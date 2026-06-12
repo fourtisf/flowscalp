@@ -156,6 +156,36 @@ def test_report_shape_and_oos_split():
     assert compute_report(r_is, 10_000.0)["trades"] + compute_report(r_oos, 10_000.0)["trades"] > 0
 
 
+def test_resample_15m_ohlcv_buckets():
+    from backtest.run import resample_candles
+    base = 1_800_000_000_000 // 900_000 * 900_000
+    c = [Candle(base + i * 60_000, float(i), i + 10.0, i - 10.0, i + 1.0, 2.0)
+         for i in range(31)]
+    r = resample_candles(c, 900_000)
+    assert len(r) == 3                                   # 15 + 15 + 1 bars
+    assert r[0].ts == base and r[1].ts == base + 900_000
+    assert r[0].open == 0.0 and r[0].close == 15.0       # first open, last close
+    assert r[0].high == 24.0 and r[0].low == -10.0
+    assert r[0].volume == pytest.approx(30.0)
+    assert r[2].volume == pytest.approx(2.0)             # trailing partial bucket kept
+
+
+def test_tf15m_main_runs_and_prints_ringkas(tmp_path, capsys):
+    from backtest.data import save_candles as save
+    from backtest.run import main as bt_main
+    p = str(tmp_path / "c.csv")
+    save(generate_candles(days=40, seed=5), p)
+    rc = bt_main(["--csv", p, "--tf", "15m", "--oos", "0.3", "--vol-mult", "1.0",
+                  "--no-cvd", "--time-stop", "240", "--sl-cap", "1.2",
+                  "--sl-buffer", "0.1", "--atr-floor", "5", "--atr-ceil", "400",
+                  "--session", "00:00-24:00", "--blackout", "",
+                  "--tag", "T15", "--out", str(tmp_path / "r")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "bar 15 menit" in out
+    assert "RINGKAS | T15 | IS" in out and "OOS" in out
+
+
 def test_cvd_filter_with_deltas_changes_behavior():
     candles = generate_candles(days=6, seed=7)
     s = S_OPEN

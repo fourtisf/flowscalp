@@ -141,7 +141,8 @@ def evaluate_ex(c1m: Sequence["Candle"], c15m: Sequence["Candle"], deltas, s,
     """Full evaluation with skip diagnostics. Gate order (cheapest first):
     session → ATR band → bias → structure (incl. SL cap) → volume → CVD → funding."""
     n = len(c1m)
-    if n < max(s.sweep_lookback + 3, 60) or len(c15m) < 210:
+    # the bias-frame history (EMA200) is only required when the bias filter is on
+    if n < max(s.sweep_lookback + 3, 60) or (s.bias_filter and len(c15m) < 210):
         return EvalResult()
     last, prev = c1m[-1], c1m[-2]
 
