@@ -17,7 +17,7 @@ from config import Settings
 from core import risk
 from core.executor import Fill, LiveExecutor, PaperExecutor
 from core.state import Bot, BotState, Pos, Position, utc_day, utc_midnight_ms
-from core.strategy import Signal, evaluate_ex
+from core.strategy import Candle, Signal, atr, evaluate_ex
 from tg import messages
 
 log = logging.getLogger("flowscalp.engine")
@@ -26,6 +26,9 @@ RECONCILE_EVERY_MS = 30_000
 STALE_ALERT_MS = 60_000
 BACKUP_STOP_DELAY_MS = 2_000
 TAKER_GIVEUP_MS = 10_000
+FOUR_H_MS = 14_400_000
+FIFTEEN_MIN_MS = 900_000
+TREND_ATR_PERIOD = 14
 
 
 def now_ms() -> int:
@@ -181,11 +184,14 @@ class Engine:
         elif kind == "fill":
             if self.executor is not None and self.executor.name == "live":
                 await self.handle_fill(self.executor.to_fill(payload))
+        elif kind == "candle_15m_closed":
+            if isinstance(payload, tuple):
+                coin, bar = payload
+                await self._on_bar15(coin, bar)
         elif kind == "timer":
             await self._on_timer(payload)
         elif kind == "cmd":
             await self._on_cmd(payload)
-        # candle_15m_closed only refreshes the feed buffer
 
     # ------------------------------------------------------------------ commands
     async def submit(self, name: str, **kw):
@@ -304,6 +310,13 @@ class Engine:
         books = getattr(self.feed, "books", None) or {self._primary(): self.feed}
         lines = [f"🔎 KENAPA BELUM ENTRY — kondisi sekarang",
                  f"state {st.bot_state.value} | posisi {st.pos_state.value} | mode {st.mode}"]
+        if s.trend_mode:
+            lines[0] = "🔎 KENAPA BELUM ENTRY — strategi v3 trend 4 jam"
+            for _coin in books:
+                lines.append("")
+                lines.append(f"— {_coin} —")
+                lines.extend(self._why_trend_coin(_coin, s))
+            return "\n".join(lines)
         for _coin, _bk in books.items():
             lines.append("")
             lines.append(f"— {_coin} —")
@@ -461,6 +474,8 @@ class Engine:
         if st.pos_state != Pos.FLAT or st.bot_state != Bot.RUNNING:
             return
         s = self.store.current
+        if s.trend_mode:
+            return                      # v3: entries come from 4h closes, not 1m sweeps
         close_dt = datetime.fromtimestamp((bar.ts + 60_000) / 1000, tz=timezone.utc)
         ok, why = risk.can_enter(st, s, close_dt, bar_ts=bar.ts)
         if not ok:
@@ -506,6 +521,110 @@ class Engine:
                                oids={"entry": oid}, placed_ts=ts, coin=coin)
         st.set_pos_state(Pos.PENDING_ENTRY)
         await self._notify(messages.entry_placed(sig.side, sig.entry_px, st.mode, coin))
+
+    # ------------------------------------------------------------------ v3 trend (4h)
+    @staticmethod
+    def _agg_4h(c15m) -> list:
+        """Closed 15m bars → 4h buckets. The first bucket may be partial
+        (bootstrap can start mid-bucket) so it is dropped."""
+        out: list[Candle] = []
+        cur: Optional[Candle] = None
+        for b in c15m:
+            t0 = b.ts // FOUR_H_MS * FOUR_H_MS
+            if cur is None or t0 > cur.ts:
+                if cur is not None:
+                    out.append(cur)
+                cur = Candle(t0, b.open, b.high, b.low, b.close, b.volume)
+            else:
+                cur.high = max(cur.high, b.high)
+                cur.low = min(cur.low, b.low)
+                cur.close = b.close
+                cur.volume += b.volume
+        if cur is not None:
+            out.append(cur)
+        return out[1:] if len(out) > 1 else out
+
+    async def _on_bar15(self, coin: str, bar) -> None:
+        """v3 driver: act only on 15m closes that complete a 4h boundary."""
+        st = self.state
+        st.last_tick_ts = self.feed.last_tick_ts
+        s = self.store.current
+        if not s.trend_mode or self.executor is None:
+            return
+        if (bar.ts + FIFTEEN_MIN_MS) % FOUR_H_MS != 0:
+            return
+        c4h = self._agg_4h(self._book(coin).candles_15m)
+        if len(c4h) < max(s.trend_lookback + 2, TREND_ATR_PERIOD + 2):
+            return
+        pos = st.position
+        if (pos is not None and pos.trend and st.pos_state == Pos.IN_POSITION
+                and (pos.coin or self._primary()) == coin):
+            await self._trend_trail(pos, c4h, s)
+        elif st.pos_state == Pos.FLAT and st.bot_state == Bot.RUNNING:
+            await self._trend_entry(coin, c4h, s)
+
+    async def _trend_trail(self, pos: Position, c4h: list, s) -> None:
+        last = c4h[-1]
+        pos.hi_close = max(pos.hi_close or pos.entry_px, last.close)
+        a = atr(c4h, TREND_ATR_PERIOD)
+        if a <= 0:
+            return
+        new_stop = pos.hi_close - s.trend_atr_k * a
+        if new_stop > pos.sl_px:
+            old = pos.sl_px
+            pos.sl_px = new_stop
+            await self.executor.move_sl(pos, new_stop)
+            self.state.save_snapshot()
+            await self.db.log_event("INFO", f"trail {pos.coin}: sl {old:.2f} → {new_stop:.2f}")
+            locked = (new_stop - pos.entry_px) / pos.entry_px * 100
+            await self._notify(f"🪜 trailing stop {pos.coin} naik → {messages.fmt_px(new_stop)}"
+                               f" ({locked:+.2f}% dari entry)")
+
+    async def _trend_entry(self, coin: str, c4h: list, s) -> None:
+        st = self.state
+        last = c4h[-1]
+        highest = max(c.high for c in c4h[-(s.trend_lookback + 1):-1])
+        if last.close <= highest:
+            return
+        if not st.last_tick_ts or now_ms() - st.last_tick_ts > risk.STALE_FEED_MS:
+            await self.db.log_event("INFO", f"trend entry skip {coin}: stale feed")
+            return
+        a = atr(c4h, TREND_ATR_PERIOD)
+        mid = self._mid_of(coin) or last.close
+        sl = mid - s.trend_atr_k * a
+        if a <= 0 or sl <= 0:
+            return
+        equity = await self.executor.equity()
+        sz_dec = (self.executor.sz_dec(coin) if hasattr(self.executor, "sz_dec")
+                  else self.executor.sz_decimals)
+        size = risk.position_size(equity, mid, sl, s, sz_dec)
+        if not size.ok:
+            await self.db.log_event("INFO", f"trend size skip {coin}: {size.skip_reason}")
+            return
+        sig = Signal("long", mid, sl, 0.0, swept_level=0.0,
+                     reason=f"v3 breakout 4h > {highest:,.0f} | trail {s.trend_atr_k}xATR")
+        st.position = Position(side="long", entry_px=mid, size_btc=size.size_btc,
+                               size_usd=size.size_usd, sl_px=sl, tp_px=0.0,
+                               reason=sig.reason, oids={}, placed_ts=now_ms(), coin=coin,
+                               trend=True, hi_close=last.close)
+        st.position.taker_sent_ts = now_ms()
+        st.set_pos_state(Pos.PENDING_ENTRY)
+        await self._notify(f"⚡ v3 breakout {coin}: entry market @ ~{messages.fmt_px(mid)}"
+                           f" | sl awal {messages.fmt_px(sl)} (trailing)")
+        await self.executor.taker_entry(sig, size.size_btc, coin=coin)
+
+    def _why_trend_coin(self, coin: str, s) -> list:
+        c4h = self._agg_4h(self._book(coin).candles_15m)
+        need = max(s.trend_lookback + 2, TREND_ATR_PERIOD + 2)
+        if len(c4h) < need:
+            return [f"❌ data: {len(c4h)} bar 4h (butuh {need})"]
+        last = c4h[-1]
+        highest = max(c.high for c in c4h[-(s.trend_lookback + 1):-1])
+        bps = atr(c4h, TREND_ATR_PERIOD) / last.close * 10_000
+        return [f"✅ data: {len(c4h)} bar 4h | ATR {bps:.0f} bps",
+                f"{'✅ BREAKOUT' if last.close > highest else '⏳ menunggu breakout'}:"
+                f" close 4h {last.close:,.0f} vs level {highest:,.0f}"
+                f" (butuh > {highest:,.0f})"]
 
     async def _on_mid(self, coin: str, mid: float) -> None:
         st = self.state
@@ -701,8 +820,9 @@ class Engine:
                 await self._maker_timeout(pos, s)
 
         pos = st.position
-        # time stop
+        # time stop (trend positions ride for days — no clock on them)
         if (st.pos_state == Pos.IN_POSITION and pos is not None and pos.ts_open
+                and not pos.trend
                 and now - pos.ts_open >= s.time_stop_min * 60_000):
             pos.pending_exit_reason = "time_stop"
             st.set_pos_state(Pos.EXITING)

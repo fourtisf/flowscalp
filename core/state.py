@@ -67,6 +67,8 @@ class Position:
     entry_tx_crossed: bool = False  # our order was the taker in that tx
     exit_tx_crossed: bool = False
     coin: str = "BTC"          # symbol this position belongs to
+    trend: bool = False        # v3 trend position: no TP, no time stop, trailing SL
+    hi_close: float = 0.0      # highest 4h close since entry (chandelier anchor)
 
 
 def utc_day(ts_ms: Optional[int] = None) -> str:

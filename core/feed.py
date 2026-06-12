@@ -35,7 +35,7 @@ FIFTEEN_MIN_MS = 900_000
 CANDLE_GRACE_MS = 3_000
 WS_STALE_MS = 75_000
 BOOTSTRAP_1M = 620
-BOOTSTRAP_15M = 310
+BOOTSTRAP_15M = 1000   # ≥ ~62 bar 4h: cukup untuk lookback v3 (42) + ATR14 + margin
 
 
 def now_ms() -> int:
@@ -53,7 +53,7 @@ class CoinBook:
     def __init__(self) -> None:
         self.candles_1m: deque[Candle] = deque(maxlen=600)
         self.deltas_1m: deque[Optional[float]] = deque(maxlen=600)
-        self.candles_15m: deque[Candle] = deque(maxlen=300)
+        self.candles_15m: deque[Candle] = deque(maxlen=1100)
         self.live_1m: Optional[Candle] = None
         self.live_15m: Optional[Candle] = None
         self.delta_acc: dict[int, float] = {}

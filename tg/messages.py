@@ -47,11 +47,15 @@ def entry_block(pos, mode: str, risk_pct: float, partial: bool = False,
     e = "🟢" if pos.side == "long" else "🔴"
     sl_pct = (pos.sl_px - pos.entry_px) / pos.entry_px * 100
     risk = abs(pos.entry_px - pos.sl_px)
-    tp_r = abs(pos.tp_px - pos.entry_px) / risk if risk > 0 else 0.0
+    if pos.tp_px > 0:
+        tp_r = abs(pos.tp_px - pos.entry_px) / risk if risk > 0 else 0.0
+        tp_s = f"{fmt_px(pos.tp_px)} ({tp_r:.1f}R)"
+    else:
+        tp_s = "— (trailing stop, ikut naik)"
     tag = f"{mode}, partial fill" if partial else mode
     return (f"{e} {pos.side.upper()} {coin}  ({tag})\n"
             f"entry {fmt_px(pos.entry_px)} | sl {fmt_px(pos.sl_px)} ({sl_pct:+.2f}%)"
-            f" | tp {fmt_px(pos.tp_px)} ({tp_r:.1f}R)\n"
+            f" | tp {tp_s}\n"
             f"size {pos.size_btc:.5f} {coin} ({fmt_usd(pos.size_usd)}) | risk {risk_pct:.2f}% eq\n"
             f"reason: {pos.reason}")
 
@@ -89,9 +93,10 @@ def status_text(st, settings, equity: float, upnl: Optional[float], mid: float,
     ]
     pos = st.position
     if pos is not None and pos.ts_open:
+        tp_s = fmt_px(pos.tp_px) if pos.tp_px > 0 else "—(trailing)"
         lines.append(f"open {pos.side.upper()} {pos.filled_sz:.4f}"
                      f" {getattr(pos, 'coin', 'BTC') or 'BTC'} @ {fmt_px(pos.entry_px)}"
-                     f" | sl {fmt_px(pos.sl_px)} tp {fmt_px(pos.tp_px)}"
+                     f" | sl {fmt_px(pos.sl_px)} tp {tp_s}"
                      f" | uPnL {fmt_usd(upnl or 0, signed=True)}")
     elif st.pos_state.value == "PENDING_ENTRY":
         lines.append(f"pending {pos.side.upper()} entry @ {fmt_px(pos.entry_px)}")
@@ -118,8 +123,9 @@ def position_text(pos, upnl: float, minutes: int) -> str:
     if pos is None or not pos.ts_open:
         return "no open position"
     c = getattr(pos, "coin", "BTC") or "BTC"
+    tp_s = fmt_px(pos.tp_px) if pos.tp_px > 0 else "—(trailing)"
     return (f"{pos.side.upper()} {pos.filled_sz:.5f} {c} @ {fmt_px(pos.entry_px)}\n"
-            f"sl {fmt_px(pos.sl_px)} | tp {fmt_px(pos.tp_px)}"
+            f"sl {fmt_px(pos.sl_px)} | tp {tp_s}"
             f" | uPnL {fmt_usd(upnl, signed=True)} | {minutes}m in trade")
 
 

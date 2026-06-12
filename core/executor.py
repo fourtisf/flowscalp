@@ -201,11 +201,14 @@ class PaperExecutor:
                                 coin=coin))
 
     async def arm_exits(self, pos: Position) -> None:
-        if "tp" not in pos.oids:
+        if pos.tp_px > 0 and "tp" not in pos.oids:
             pos.oids["tp"] = self._next_oid()
         if "sl" not in pos.oids:
             pos.oids["sl"] = self._next_oid()
         self._armed = pos
+
+    async def move_sl(self, pos: Position, new_px: float) -> None:
+        self._armed = pos  # px already updated on the shared Position
 
     async def cancel_all(self) -> None:
         self._pending = None
@@ -264,9 +267,11 @@ class PaperExecutor:
             return
         ts = bar.ts + 60_000
         if pos.side == "long":
-            sl_hit, tp_hit = bar.low <= pos.sl_px, bar.high >= pos.tp_px
+            sl_hit = bar.low <= pos.sl_px
+            tp_hit = pos.tp_px > 0 and bar.high >= pos.tp_px
         else:
-            sl_hit, tp_hit = bar.high >= pos.sl_px, bar.low <= pos.tp_px
+            sl_hit = bar.high >= pos.sl_px
+            tp_hit = pos.tp_px > 0 and bar.low <= pos.tp_px
         if sl_hit:  # SL-first when both lie inside the bar (conservative)
             self._armed = None
             await self.on_fill(Fill(pos.oids["sl"], pos.sl_px, remaining,
@@ -430,11 +435,14 @@ class LiveExecutor:
         dec = self.sz_dec(coin)
         is_buy_exit = pos.side == "short"
         sz = pos.filled_sz or pos.size_btc
-        tp_px = round_px(pos.tp_px, dec)
-        resp = await self._retry(
-            "arm_tp", self._exchange.order, coin, is_buy_exit, sz, tp_px,
-            {"limit": {"tif": "Gtc"}}, True)
-        pos.oids["tp"], _ = self._oid_from_response(resp)
+        tp_desc = "—(trailing)"
+        if pos.tp_px > 0:                       # trend positions run without a TP
+            tp_px = round_px(pos.tp_px, dec)
+            resp = await self._retry(
+                "arm_tp", self._exchange.order, coin, is_buy_exit, sz, tp_px,
+                {"limit": {"tif": "Gtc"}}, True)
+            pos.oids["tp"], _ = self._oid_from_response(resp)
+            tp_desc = f"{tp_px} (oid {pos.oids['tp']})"
 
         sl_px = round_px(pos.sl_px, dec)
         guard = sl_px * (1 + SL_TRIGGER_BOUND) if is_buy_exit else sl_px * (1 - SL_TRIGGER_BOUND)
@@ -443,8 +451,28 @@ class LiveExecutor:
             round_px(guard, dec),
             {"trigger": {"triggerPx": sl_px, "isMarket": True, "tpsl": "sl"}}, True)
         pos.oids["sl"], _ = self._oid_from_response(resp)
-        await self.db.log_event("INFO", f"exits armed tp {tp_px} (oid {pos.oids['tp']})"
+        await self.db.log_event("INFO", f"exits armed tp {tp_desc}"
                                         f" sl {sl_px} (oid {pos.oids['sl']})")
+
+    async def move_sl(self, pos: Position, new_px: float) -> None:
+        """Trailing stop ratchet: replace the reduce-only SL trigger upward.
+        The old trigger is canceled only AFTER the new one rests, so the
+        position is never left without a stop on the exchange."""
+        coin = pos.coin or self.coin
+        dec = self.sz_dec(coin)
+        old = pos.oids.get("sl")
+        is_buy_exit = pos.side == "short"
+        sz = pos.filled_sz - pos.exit_sz
+        sl_px = round_px(new_px, dec)
+        guard = sl_px * (1 + SL_TRIGGER_BOUND) if is_buy_exit else sl_px * (1 - SL_TRIGGER_BOUND)
+        resp = await self._retry(
+            "move_sl", self._exchange.order, coin, is_buy_exit, sz,
+            round_px(guard, dec),
+            {"trigger": {"triggerPx": sl_px, "isMarket": True, "tpsl": "sl"}}, True)
+        pos.oids["sl"], _ = self._oid_from_response(resp)
+        if old:
+            await self.cancel_entry(old, coin)
+        await self.db.log_event("INFO", f"trailing sl → {sl_px} (oid {pos.oids['sl']})")
 
     async def cancel_all(self) -> None:
         all_orders = await self._retry("open_orders", self._info.open_orders,

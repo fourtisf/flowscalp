@@ -110,6 +110,10 @@ class Settings(BaseModel):
     blackout_windows: tuple[str, ...] = ("13:15-13:45", "18:45-19:15")
     funding_filter: bool = False
     bias_filter: bool = True
+    # --- strategi v3: trend-following 4 jam (long-flat, trailing stop) ---
+    trend_mode: bool = False           # True = entry dari breakout 4h, bukan sweep 1m
+    trend_lookback: int = 42           # breakout di atas tertinggi N bar 4h sebelumnya
+    trend_atr_k: float = 3.5           # trailing stop chandelier = k x ATR14 (4h)
 
 
 RANGES: dict[str, dict[str, Any]] = {
@@ -155,6 +159,13 @@ RANGES: dict[str, dict[str, Any]] = {
                              "desc": "hindari sisi yang melawan funding yang sudah penuh sesak"},
     "bias_filter":          {"type": bool,
                              "desc": "filter tren EMA200 15m (di atas = long saja, di bawah = short)"},
+    "trend_mode":           {"type": bool,
+                             "desc": "strategi v3: trend-following bar 4 jam (breakout + trailing stop,"
+                                     " tanpa TP); false = strategi sweep 1m"},
+    "trend_lookback":       {"type": int, "min": 20, "max": 60,
+                             "desc": "v3: breakout di atas tertinggi N bar 4 jam sebelumnya"},
+    "trend_atr_k":          {"type": float, "min": 2.0, "max": 5.0,
+                             "desc": "v3: jarak trailing stop = k x ATR14 bar 4 jam"},
 }
 
 # Human-friendly button/display labels (Indonesian) for each setting key
@@ -180,6 +191,9 @@ LABELS: dict[str, str] = {
     "blackout_windows": "Jam hindari berita (UTC)",
     "funding_filter": "Filter funding",
     "bias_filter": "Filter tren 15m",
+    "trend_mode": "Strategi trend 4 jam (v3)",
+    "trend_lookback": "v3: lookback breakout (bar 4h)",
+    "trend_atr_k": "v3: trailing stop (x ATR)",
 }
 
 def _coins_env() -> tuple:

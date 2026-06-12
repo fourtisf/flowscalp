@@ -450,3 +450,66 @@ async def test_multi_coin_taker_fallback_stays_on_signal_coin(harness):
     pos = state.position
     assert pos.coin == "SOL"
     assert pos.entry_px == pytest.approx(99_950.0 * 1.0001)    # SOL mid + 1bp slip
+
+
+def _bucket15(base: int, idx: int, o: float, h: float, lo: float, close: float):
+    """16 closed 15m bars filling exactly one 4h bucket."""
+    out = []
+    for j in range(16):
+        ts = base + (idx * 16 + j) * 900_000
+        c = close if j == 15 else o
+        out.append(Candle(ts, o, h, lo, c, 100.0))
+    return out
+
+
+async def test_trend_mode_full_cycle_breakout_trail_timestop_immunity_and_stop(harness):
+    """v3: a 4h breakout enters long via taker, the chandelier stop ratchets on
+    the next 4h close, the time stop leaves it alone, and the trailing SL exit
+    books as 'sl'. The 1m sweep path must stay silent in trend mode."""
+    engine, db, feed, state, notifier, sig_bar = await harness(
+        trend_mode="true", trend_lookback="20", trend_atr_k="2.0")
+    FOURH = 14_400_000
+    base = 1_800_000_000_000 // FOURH * FOURH
+    bars = []
+    for i in range(24):                                     # flat history
+        bars += _bucket15(base, i, 100_000.0, 100_100.0, 99_900.0, 100_000.0)
+    bars += _bucket15(base, 24, 100_000.0, 101_100.0, 99_950.0, 101_000.0)  # breakout close
+    feed.candles_15m = deque(bars, maxlen=1100)
+    feed.mid = 101_000.0
+    import time as _t
+    feed.last_tick_ts = int(_t.time() * 1000)
+
+    await engine._dispatch("candle_15m_closed", ("BTC", bars[-1]))
+    assert state.pos_state == Pos.IN_POSITION               # paper taker fills instantly
+    pos = state.position
+    assert pos.trend and pos.tp_px == 0.0 and pos.side == "long"
+    assert pos.entry_px == pytest.approx(101_000.0 * 1.0001)
+    sl0 = pos.sl_px
+    assert 0 < sl0 < pos.entry_px
+    assert any("v3 breakout" in m for m in notifier.msgs)
+
+    # next 4h close higher → stop must ratchet UP (and only up)
+    more = _bucket15(base, 25, 101_000.0, 103_200.0, 100_900.0, 103_000.0)
+    for b in more:
+        feed.candles_15m.append(b)
+    await engine._dispatch("candle_15m_closed", ("BTC", more[-1]))
+    assert pos.sl_px > sl0
+    assert any("trailing stop" in m for m in notifier.msgs)
+
+    # trend positions are immune to the 15-minute time stop
+    await engine._dispatch("timer", pos.ts_open + 10 * 3_600_000)
+    assert state.pos_state == Pos.IN_POSITION
+
+    # a 1m bar falling through the trailing stop exits as SL at the stop price
+    sl = pos.sl_px
+    bar1m = Candle(more[-1].ts + 900_000, sl + 60, sl + 80, sl - 200, sl - 100, 50.0)
+    await engine._dispatch("candle_1m_closed", ("BTC", bar1m))
+    assert state.pos_state == Pos.FLAT and state.position is None
+    tr = (await db.recent_trades("paper", 1))[0]
+    assert tr["exit_reason"] == "sl" and tr["coin"] == "BTC"
+    assert tr["exit_px"] == pytest.approx(sl)
+
+    # in trend mode a perfect 1m sweep bar must NOT open anything
+    feed.push_bar(sig_bar)
+    await engine._dispatch("candle_1m_closed", ("BTC", sig_bar))
+    assert state.pos_state == Pos.FLAT

@@ -13,6 +13,19 @@ def test_validate_in_range():
     assert ok and v == 60 and isinstance(v, int)
 
 
+def test_trend_v3_settings_validate():
+    ok, v = validate_setting("trend_mode", "true")
+    assert ok and v is True
+    ok, v = validate_setting("trend_lookback", "42")
+    assert ok and v == 42
+    ok, _ = validate_setting("trend_lookback", "10")          # below min 20
+    assert not ok
+    ok, v = validate_setting("trend_atr_k", "3.5")
+    assert ok and v == 3.5
+    ok, _ = validate_setting("trend_atr_k", "9")              # above max 5
+    assert not ok
+
+
 def test_validate_out_of_range():
     ok, err = validate_setting("risk_pct", "5")
     assert not ok and "out of range" in err
